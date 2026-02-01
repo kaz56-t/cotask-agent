@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cotask-agent-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    networks:
+      - cotask-network
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cotask-agent-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./data/sqlite.db
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - MAX_CONCURRENT_TASKS=${MAX_CONCURRENT_TASKS:-3}
+    volumes:
+      - ./data:/app/data
+      - ./backend:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - init-data
+    networks:
+      - cotask-network
+    restart: unless-stopped
+
+  runtime:
+    build:
+      context: ./runtime
+      dockerfile: Dockerfile
+    container_name: cotask-agent-runtime
+    volumes:
+      - ./data/artifacts:/workspace/outputs
+    networks:
+      - cotask-network
+    restart: unless-stopped
+
+  init-data:
+    image: busybox:latest
+    container_name: cotask-agent-init-data
+    volumes:
+      - ./data:/data
+    command: sh -c "mkdir -p /data/artifacts && chmod -R 777 /data"
+    networks:
+      - cotask-network
+
+networks:
+  cotask-network:
+    driver: bridge
+
+volumes:
+  data:
+    driver: local
