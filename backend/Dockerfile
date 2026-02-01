@@ -1,27 +1,20 @@
-# Use Python 3.14 slim image
-FROM python:3.14-slim
+FROM python:3.13-slim
+
+WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    curl \
-    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
-WORKDIR /app
-
-# Copy dependency files first
+# Copy dependency files
 COPY pyproject.toml ./
 
-# Copy application code (needed for -e install)
-COPY . .
-
 # Install Python dependencies
-# Install in editable mode so code changes are reflected
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir uv && \
+    uv pip install --system -e .
 
-# Create data directory
-RUN mkdir -p /app/data/artifacts
+# Copy application code
+COPY . .
 
 # Expose port
 EXPOSE 8000

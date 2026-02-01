@@ -1,71 +1,45 @@
 version: '3.8'
 
 services:
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: cotask-agent-frontend
-    ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
-    depends_on:
-      - backend
-    networks:
-      - cotask-network
-    restart: unless-stopped
-
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: cotask-agent-backend
+    container_name: cotask-backend
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=sqlite:///./data/sqlite.db
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - MAX_CONCURRENT_TASKS=${MAX_CONCURRENT_TASKS:-3}
     volumes:
-      - ./data:/app/data
       - ./backend:/app
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - init-data
+      - /app/.venv  # Python仮想環境を除外
+      - ./backend/data:/app/data  # データベースファイルの永続化
+    env_file:
+      - .env  # .envファイルを環境変数として読み込む
+    environment:
+      - PYTHONUNBUFFERED=1
     networks:
       - cotask-network
     restart: unless-stopped
 
-  runtime:
+  frontend:
     build:
-      context: ./runtime
+      context: ./frontend
       dockerfile: Dockerfile
-    container_name: cotask-agent-runtime
+    container_name: cotask-frontend
+    ports:
+      - "3000:3000"
     volumes:
-      - ./data/artifacts:/workspace/outputs
+      - ./frontend:/app
+      - /app/node_modules  # node_modulesを除外
+      - /app/.next  # Next.jsのビルドキャッシュを除外
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - WATCHPACK_POLLING=true  # Windowsでのファイル監視対応
     networks:
       - cotask-network
+    depends_on:
+      - backend
     restart: unless-stopped
-
-  init-data:
-    image: busybox:latest
-    container_name: cotask-agent-init-data
-    volumes:
-      - ./data:/data
-    command: sh -c "mkdir -p /data/artifacts && chmod -R 777 /data"
-    networks:
-      - cotask-network
 
 networks:
   cotask-network:
     driver: bridge
-
-volumes:
-  data:
-    driver: local
