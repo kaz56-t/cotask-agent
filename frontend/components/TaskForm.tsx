@@ -12,7 +12,7 @@ interface TaskFormProps {
 const MODEL_OPTIONS: Record<ModelProvider, { name: string; models: string[] }> = {
   openai: {
     name: "OpenAI",
-    models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
+    models: ["gpt-5-nano", "gpt-5-mini", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
   },
   anthropic: {
     name: "Anthropic",
@@ -24,7 +24,7 @@ export default function TaskForm({ onTaskCreated }: TaskFormProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [modelProvider, setModelProvider] = useState<ModelProvider>("openai");
-  const [modelName, setModelName] = useState("gpt-4o");
+  const [modelName, setModelName] = useState("gpt-5-nano");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

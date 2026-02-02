@@ -8,14 +8,34 @@ import uuid
 import os
 from datetime import datetime
 from dotenv import load_dotenv
+import asyncio
+from pathlib import Path
+from loguru import logger
+import sys
 
 # .envファイルを読み込む（ローカル開発環境用のフォールバック）
 # docker-compose.ymlでenv_fileを指定している場合は、環境変数として既に利用可能
 load_dotenv()
 
-from database import init_db, get_db, ChatSession, ChatMessage, Task, TaskStatus, ModelProvider
+# Loguruの設定
+logger.remove()  # デフォルトのハンドラを削除
+logger.add(
+    sys.stdout,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    level="DEBUG"
+)
+logger.add(
+    "/app/data/app.log",
+    rotation="10 MB",
+    retention="7 days",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+    level="DEBUG"
+)
+
+from database import init_db, get_db, ChatSession, ChatMessage, Task, TaskStatus, ModelProvider, TaskLog
 from chat_agent import create_chat_agent, format_messages_for_langgraph
 from langchain_core.messages import HumanMessage
+from agents import create_workflow
 
 app = FastAPI(title="CoTask Agent API", version="0.1.0")
 
@@ -104,6 +124,27 @@ class TaskResponse(BaseModel):
 class TaskListResponse(BaseModel):
     tasks: List[TaskResponse]
     total: int
+
+
+class TaskLogResponse(BaseModel):
+    id: int
+    task_id: str
+    timestamp: str
+    role: str
+    content: str
+
+    class Config:
+        from_attributes = True
+
+
+class ArtifactResponse(BaseModel):
+    name: str
+    path: str
+    size: int
+
+
+class ArtifactsResponse(BaseModel):
+    artifacts: List[ArtifactResponse]
 
 
 @app.get("/")
@@ -593,6 +634,171 @@ async def send_task_message(
     )
 
 
+async def run_task_background(task_id: str):
+    """バックグラウンドでタスクを実行する関数"""
+    logger.info(f"Starting background task execution: {task_id}")
+    db = next(get_db())
+    try:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            logger.error(f"Task {task_id} not found")
+            return
+        
+        logger.info(f"Task found: {task.name} (status: {task.status})")
+        
+        # チャット履歴から要件を抽出
+        messages = db.query(ChatMessage).filter(
+            ChatMessage.session_id == task.session_id
+        ).order_by(ChatMessage.timestamp).all()
+        
+        # 要件の要約を作成（チャット履歴から）
+        requirements_summary = "\n".join([
+            f"{msg.role}: {msg.content}" for msg in messages[-5:]  # 最後の5メッセージ
+        ])
+        
+        # 成果物の出力パス
+        artifacts_dir = Path("/app/data/artifacts")
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        task_artifacts_dir = artifacts_dir / task_id
+        task_artifacts_dir.mkdir(parents=True, exist_ok=True)
+        runtime_output_path = str(task_artifacts_dir)
+        
+        # ログコールバック関数
+        def log_callback(role: str, content: str):
+            try:
+                log_entry = TaskLog(
+                    task_id=task_id,
+                    role=role,
+                    content=content
+                )
+                db.add(log_entry)
+                db.commit()
+                logger.info(f"[TaskLog][{role}] {content[:200]}")
+            except Exception as e:
+                logger.error(f"Failed to save task log: {e}")
+                logger.debug(f"Log content: {content[:500]}")
+        
+        # コード実行関数（Phase 4: 同一コンテナ内で実行）
+        def execute_code_func(code: str) -> str:
+            """コードを実行して結果を返す（Phase 4: 同一コンテナ内実行）"""
+            import subprocess
+            import tempfile
+            import sys
+            
+            try:
+                # 一時ファイルにコードを保存
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                    f.write(code)
+                    temp_file = f.name
+                
+                # コードを実行
+                result = subprocess.run(
+                    [sys.executable, temp_file],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    cwd=str(task_artifacts_dir)
+                )
+                
+                # 一時ファイルを削除
+                import os
+                os.unlink(temp_file)
+                
+                success = result.returncode == 0
+                stdout = result.stdout
+                stderr = result.stderr
+                
+                result_str = f"Success: {success}\n"
+                if stdout:
+                    result_str += f"Output:\n{stdout}\n"
+                if stderr:
+                    result_str += f"Error:\n{stderr}\n"
+                
+                log_callback("executor", f"Code execution result:\n{result_str}")
+                return result_str
+                
+            except subprocess.TimeoutExpired:
+                error_msg = "Code execution timed out after 300 seconds"
+                log_callback("executor", f"Error: {error_msg}")
+                return f"Error: {error_msg}"
+            except Exception as e:
+                error_msg = f"Error executing code: {str(e)}"
+                log_callback("executor", error_msg)
+                return f"Error: {error_msg}"
+        
+        # モデルプロバイダーの設定
+        model_provider = ModelProvider.OPENAI if task.model_provider == "openai" else ModelProvider.ANTHROPIC
+        
+        # エージェントワークフローを作成
+        logger.info("Creating agent workflow")
+        workflow, initial_state = create_workflow(
+            model_provider=model_provider,
+            model_name=task.model_name,
+            task_id=task_id,
+            task_name=task.name,
+            task_description=task.description + "\n\n要件:\n" + requirements_summary,
+            runtime_output_path=runtime_output_path,
+            execute_code_func=execute_code_func,
+            log_callback=log_callback
+        )
+        
+        logger.info("Workflow created, starting execution")
+        log_callback("system", f"Starting task execution: {task.name}")
+        
+        # ワークフローを実行
+        try:
+            logger.info("Invoking workflow")
+            result = workflow.invoke(initial_state)
+            logger.success("Workflow execution completed successfully")
+            log_callback("system", "Task execution completed successfully")
+            
+            # 成果物を確認（Phase 4: ローカルファイルシステムから確認）
+            if task_artifacts_dir.exists():
+                artifacts = list(task_artifacts_dir.iterdir())
+                if artifacts:
+                    artifact_path = str(task_artifacts_dir)
+                    task.artifact_path = artifact_path
+                    log_callback("system", f"Artifacts saved to: {artifact_path}")
+            
+            # タスクを完了状態に更新
+            task.status = TaskStatus.COMPLETED.value
+            task.completed_at = datetime.utcnow()
+            db.commit()
+            
+        except Exception as e:
+            logger.error(f"Task execution failed: {e}", exc_info=True)
+            import traceback
+            error_traceback = traceback.format_exc()
+            logger.error(f"Traceback: {error_traceback}")
+            log_callback("system", f"Task execution failed: {str(e)}\n\n{error_traceback}")
+            task.status = TaskStatus.FAILED.value
+            task.error_message = f"{str(e)}\n\n{error_traceback}"
+            task.completed_at = datetime.utcnow()
+            db.commit()
+            logger.error(f"Task {task_id} marked as failed")
+            
+    except Exception as e:
+        logger.error(f"Error in background task execution: {e}", exc_info=True)
+        import traceback
+        error_traceback = traceback.format_exc()
+        logger.error(f"Traceback: {error_traceback}")
+        db.rollback()
+        # タスクを失敗状態に更新
+        try:
+            task = db.query(Task).filter(Task.id == task_id).first()
+            if task:
+                task.status = TaskStatus.FAILED.value
+                task.error_message = f"{str(e)}\n\n{error_traceback}"
+                task.completed_at = datetime.utcnow()
+                db.commit()
+                logger.error(f"Task {task_id} marked as failed in exception handler")
+        except Exception as inner_e:
+            logger.error(f"Failed to update task status: {inner_e}")
+    finally:
+        logger.info(f"Background task execution finished for task: {task_id}")
+        db.close()
+
+
 @app.post("/api/tasks/{task_id}/execute")
 async def execute_task(
     task_id: str,
@@ -602,6 +808,12 @@ async def execute_task(
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="タスクが見つかりません")
+    
+    # 既に実行中または完了している場合はエラー
+    if task.status == TaskStatus.RUNNING.value:
+        raise HTTPException(status_code=400, detail="タスクは既に実行中です")
+    if task.status == TaskStatus.COMPLETED.value:
+        raise HTTPException(status_code=400, detail="タスクは既に完了しています")
     
     if not task.session_id:
         raise HTTPException(status_code=404, detail="タスクにチャットセッションが関連付けられていません")
@@ -630,12 +842,105 @@ async def execute_task(
     task.started_at = datetime.utcnow()
     db.commit()
     
-    # 実行開始のメッセージを返す（Phase 4で本格実装予定）
+    # バックグラウンドでタスクを実行
+    asyncio.create_task(run_task_background(task_id))
+    
     return {
-        "message": "タスクの実行を開始しました。\n\n（Phase 4で本格実装予定）",
+        "message": "タスクの実行を開始しました。",
         "task_id": task_id,
         "status": "running"
     }
+
+
+# Phase 4: タスクログと成果物のAPI
+@app.get("/api/tasks/{task_id}/logs", response_model=List[TaskLogResponse])
+async def get_task_logs(
+    task_id: str,
+    skip: int = 0,
+    limit: int = 1000,
+    db: Session = Depends(get_db)
+):
+    """タスクのログを取得"""
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="タスクが見つかりません")
+    
+    logs = db.query(TaskLog).filter(
+        TaskLog.task_id == task_id
+    ).order_by(TaskLog.timestamp).offset(skip).limit(limit).all()
+    
+    return [
+        TaskLogResponse(
+            id=log.id,
+            task_id=log.task_id,
+            timestamp=log.timestamp.isoformat(),
+            role=log.role,
+            content=log.content
+        )
+        for log in logs
+    ]
+
+
+@app.get("/api/tasks/{task_id}/artifacts", response_model=ArtifactsResponse)
+async def get_task_artifacts(
+    task_id: str,
+    db: Session = Depends(get_db)
+):
+    """タスクの成果物一覧を取得"""
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="タスクが見つかりません")
+    
+    artifacts = []
+    if task.artifact_path:
+        artifacts_dir = Path(task.artifact_path)
+        if artifacts_dir.exists():
+            for file_path in artifacts_dir.iterdir():
+                if file_path.is_file():
+                    # パスは成果物ディレクトリからの相対パスにする
+                    relative_path = file_path.relative_to(artifacts_dir)
+                    artifacts.append(ArtifactResponse(
+                        name=file_path.name,
+                        path=str(relative_path),
+                        size=file_path.stat().st_size
+                    ))
+    
+    return ArtifactsResponse(artifacts=artifacts)
+
+
+@app.get("/api/tasks/{task_id}/artifacts/{file_path:path}")
+async def download_artifact(
+    task_id: str,
+    file_path: str,
+    db: Session = Depends(get_db)
+):
+    """成果物ファイルをダウンロード"""
+    from fastapi.responses import FileResponse
+    
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="タスクが見つかりません")
+    
+    if not task.artifact_path:
+        raise HTTPException(status_code=404, detail="成果物が見つかりません")
+    
+    artifacts_dir = Path(task.artifact_path)
+    full_path = artifacts_dir / file_path
+    
+    if not full_path.exists() or not full_path.is_file():
+        raise HTTPException(status_code=404, detail="ファイルが見つかりません")
+    
+    # セキュリティチェック: パストラバーサル攻撃を防ぐ
+    try:
+        full_path.resolve().relative_to(artifacts_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="無効なファイルパスです")
+    
+    return FileResponse(
+        path=str(full_path),
+        filename=full_path.name,
+        media_type='application/octet-stream'
+    )
 
 
 # Phase 1との互換性のため、旧エンドポイントも残す
