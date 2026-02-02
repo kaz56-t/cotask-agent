@@ -15,6 +15,12 @@ OPENAI_API_KEY=your_openai_api_key_here
 # Anthropic API Configuration
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
+# Langfuse Configuration (Optional)
+# LangfuseのAPI KEYが設定されている場合、LLMのトラッキングが可能です
+LANGFUSE_HOST=https://cloud.langfuse.com
+LANGFUSE_PUBLIC_KEY=pk-your-public-key-here
+LANGFUSE_SECRET_KEY=sk-your-secret-key-here
+
 # Task Configuration
 MAX_CONCURRENT_TASKS=3
 
@@ -38,15 +44,15 @@ docker-compose up -d
 
 ```
 .
-├── docker-compose.yml      # Docker Compose設定
-├── .env                    # 環境変数（要作成）
-├── data/                   # データ永続化
-│   ├── sqlite.db          # SQLiteデータベース
-│   └── artifacts/         # エージェントが生成したファイル
-├── frontend/              # Next.js アプリケーション
+├── docker-compose.yml          # メインアプリケーションのDocker Compose設定
+├── .env                        # 環境変数（要作成）
+├── data/                       # データ永続化
+│   ├── sqlite.db              # SQLiteデータベース
+│   └── artifacts/             # エージェントが生成したファイル
+├── frontend/                   # Next.js アプリケーション
 │   ├── Dockerfile
 │   └── package.json
-└── backend/               # FastAPI バックエンド
+└── backend/                    # FastAPI バックエンド
     ├── Dockerfile
     ├── pyproject.toml
     ├── main.py

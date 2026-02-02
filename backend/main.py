@@ -35,8 +35,10 @@ logger.add(
 from database import init_db, get_db, ChatSession, ChatMessage, Task, TaskStatus, ModelProvider, TaskLog
 from chat_agent import create_chat_agent, format_messages_for_langgraph
 from langchain_core.messages import HumanMessage
+from langchain_core.callbacks import CallbackManager
 from agents import create_workflow
 from executor import RuntimeExecutor
+from langfuse_config import get_langfuse_handler
 
 app = FastAPI(title="CoTask Agent API", version="0.1.0")
 
@@ -158,6 +160,22 @@ async def health():
     return {"status": "healthy"}
 
 
+def invoke_chat_agent_with_langfuse(chat_agent, initial_state, session_id: str):
+    """Langfuseコールバックを使用してチャットエージェントを実行するヘルパー関数"""
+    langfuse_handler = get_langfuse_handler(
+        session_id=session_id,
+        trace_name="LangGraph Chat"
+    )
+    config = {}
+    if langfuse_handler:
+        callback_manager = CallbackManager([langfuse_handler])
+        config["callbacks"] = callback_manager
+        # Langfuseのトレース名を設定
+        config["metadata"] = {"trace_name": "LangGraph Chat"}
+        config["run_name"] = "LangGraph Chat"
+    return chat_agent.invoke(initial_state, config=config if config else None)
+
+
 @app.post("/api/chat", response_model=ChatMessageResponse)
 async def chat(
     request: ChatMessageRequest,
@@ -210,7 +228,7 @@ async def chat(
                 "requirements_defined": False,
                 "requirements_summary": ""
             }
-            result = app.state.chat_agent.invoke(initial_state)
+            result = invoke_chat_agent_with_langfuse(app.state.chat_agent, initial_state, session_id)
             ai_response_content = result["messages"][-1].content
             requirements_defined = result.get("requirements_defined", False)
             requirements_summary = result.get("requirements_summary", None)
@@ -387,7 +405,7 @@ async def create_task(
                 "requirements_defined": False,
                 "requirements_summary": ""
             }
-            result = app.state.chat_agent.invoke(initial_state)
+            result = invoke_chat_agent_with_langfuse(app.state.chat_agent, initial_state, session_id)
             ai_response_content = result["messages"][-1].content
             
             # AI応答をDBに保存
@@ -598,7 +616,7 @@ async def send_task_message(
                 "requirements_defined": False,
                 "requirements_summary": ""
             }
-            result = app.state.chat_agent.invoke(initial_state)
+            result = invoke_chat_agent_with_langfuse(app.state.chat_agent, initial_state, session_id)
             ai_response_content = result["messages"][-1].content
             requirements_defined = result.get("requirements_defined", False)
             requirements_summary = result.get("requirements_summary", None)
@@ -727,16 +745,31 @@ async def run_task_background(task_id: str):
             task_description=task.description + "\n\n要件:\n" + requirements_summary,
             runtime_output_path=runtime_output_path,
             execute_code_func=execute_code_func,
-            log_callback=log_callback
+            log_callback=log_callback,
+            session_id=task.session_id
         )
         
         logger.info("Workflow created, starting execution")
         log_callback("system", f"Starting task execution: {task.name}")
         
-        # ワークフローを実行
+        # Langfuseコールバックハンドラーを取得（LangGraph実行用）
+        langfuse_handler = get_langfuse_handler(
+            task_id=task_id,
+            session_id=task.session_id,
+            trace_name="LangGraph Task"
+        )
+
         try:
             logger.info("Invoking workflow")
-            result = workflow.invoke(initial_state)
+            # LangGraphのinvokeにコールバックを渡す
+            config = {}
+            if langfuse_handler:
+                callback_manager = CallbackManager([langfuse_handler])
+                config["callbacks"] = callback_manager
+                config["metadata"] = {"trace_name": "LangGraph Task"}
+                config["run_name"] = "LangGraph Task"
+            
+            result = workflow.invoke(initial_state, config=config if config else None)
             logger.success("Workflow execution completed successfully")
             log_callback("system", "Task execution completed successfully")
             

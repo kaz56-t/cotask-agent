@@ -3,14 +3,16 @@ LangGraphによる対話フローの実装
 ユーザーの曖昧な指示に対し、AIが質問を返す対話システム
 要件定義フロー: 推測を入れずに要件を定義し、不明点を確認
 """
-from typing import TypedDict, Annotated, Literal
+from typing import TypedDict, Annotated, Literal, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from langchain_core.callbacks import BaseCallbackHandler
 import os
 import json
 import re
 from dotenv import load_dotenv
+from langfuse_config import get_langfuse_handler
 
 # .envファイルを読み込む（ローカル開発環境用のフォールバック）
 # docker-compose.ymlでenv_fileを指定している場合は、環境変数として既に利用可能
@@ -52,7 +54,7 @@ def create_chat_agent():
     if not api_key:
         raise ValueError("OPENAI_API_KEY環境変数が設定されていません")
     
-    # LLMの初期化
+    # LLMの初期化（コールバックは実行時に渡す）
     llm = ChatOpenAI(
         model="gpt-4o-mini",
         temperature=0.7,
@@ -72,7 +74,7 @@ def create_chat_agent():
             if not messages or not isinstance(messages[0], SystemMessage):
                 messages_with_system = [SystemMessage(content=REQUIREMENTS_SYSTEM_PROMPT)] + list(messages)
             
-            # LLMにメッセージを送信
+            # LLMにメッセージを送信（コールバックはLLMインスタンスに設定済み）
             response = llm.invoke(messages_with_system)
             messages = list(messages) + [response]
             

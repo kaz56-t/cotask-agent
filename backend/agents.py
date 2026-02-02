@@ -1,11 +1,13 @@
 """LangGraph-based agent definitions for task processing."""
-from typing import TypedDict, Annotated, Literal
+from typing import TypedDict, Annotated, Literal, Optional, List
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.callbacks import BaseCallbackHandler
 from database import ModelProvider
 from loguru import logger
+from langfuse_config import get_langfuse_handler
 import os
 
 
@@ -52,7 +54,11 @@ def check_api_connection(model_provider: ModelProvider, model_name: str) -> bool
         return False
 
 
-def create_llm(model_provider: ModelProvider, model_name: str):
+def create_llm(
+    model_provider: ModelProvider,
+    model_name: str,
+    callbacks: Optional[List[BaseCallbackHandler]] = None
+):
     """Create LLM instance based on provider."""
     logger.info(f"Creating LLM: provider={model_provider}, model={model_name}")
     
@@ -63,11 +69,21 @@ def create_llm(model_provider: ModelProvider, model_name: str):
     try:
         # 速度優先のため温度を下げる（0.3: より決定論的で速い）
         if model_provider == ModelProvider.OPENAI:
-            llm = ChatOpenAI(model=model_name, temperature=0.3, max_tokens=2000)
+            llm = ChatOpenAI(
+                model=model_name,
+                temperature=0.3,
+                max_tokens=2000,
+                callbacks=callbacks
+            )
             logger.success(f"OpenAI LLM created successfully: {model_name} (temperature=0.3)")
             return llm
         elif model_provider == ModelProvider.ANTHROPIC:
-            llm = ChatAnthropic(model=model_name, temperature=0.3, max_tokens=2000)
+            llm = ChatAnthropic(
+                model=model_name,
+                temperature=0.3,
+                max_tokens=2000,
+                callbacks=callbacks
+            )
             logger.success(f"Anthropic LLM created successfully: {model_name} (temperature=0.3)")
             return llm
         else:
@@ -272,15 +288,25 @@ def create_workflow(
     task_description: str,
     runtime_output_path: str,
     execute_code_func,
-    log_callback
+    log_callback,
+    session_id: Optional[str] = None
 ):
     """Create LangGraph workflow for task processing."""
     logger.info(f"Creating workflow for task: {task_id} ({task_name})")
     logger.info(f"Model: {model_provider.value}/{model_name}")
     
+    # Langfuseコールバックハンドラーを取得
+    langfuse_handler = get_langfuse_handler(
+        task_id=task_id,
+        session_id=session_id
+    )
+    callbacks = [langfuse_handler] if langfuse_handler else None
+    
     try:
-        llm = create_llm(model_provider, model_name)
+        llm = create_llm(model_provider, model_name, callbacks=callbacks)
         logger.success("LLM created successfully")
+        if langfuse_handler:
+            logger.info("Langfuse tracking enabled for this workflow")
     except Exception as e:
         logger.error(f"Failed to create LLM: {e}")
         raise
@@ -313,9 +339,14 @@ def create_workflow(
         }
     )
     
-    # Compile graph
+    # Compile graph with Langfuse callbacks if available
     logger.info("Compiling workflow graph")
-    app = workflow.compile()
+    compile_kwargs = {}
+    if langfuse_handler:
+        compile_kwargs["checkpointer"] = None  # Checkpointerは必要に応じて追加
+        logger.info("Langfuse callbacks will be used during workflow execution")
+    
+    app = workflow.compile(**compile_kwargs)
     logger.success("Workflow graph compiled successfully")
     
     # Initial state - max_iterationsを3に削減（速度優先）
