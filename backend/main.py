@@ -897,9 +897,11 @@ async def get_task_artifacts(
         if artifacts_dir.exists():
             for file_path in artifacts_dir.iterdir():
                 if file_path.is_file():
+                    # パスは成果物ディレクトリからの相対パスにする
+                    relative_path = file_path.relative_to(artifacts_dir)
                     artifacts.append(ArtifactResponse(
                         name=file_path.name,
-                        path=str(file_path.relative_to(artifacts_dir.parent)),
+                        path=str(relative_path),
                         size=file_path.stat().st_size
                     ))
     

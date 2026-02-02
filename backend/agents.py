@@ -61,13 +61,14 @@ def create_llm(model_provider: ModelProvider, model_name: str):
         raise RuntimeError(f"Failed to connect to {model_provider} API. Please check your API key and network connection.")
     
     try:
+        # 速度優先のため温度を下げる（0.3: より決定論的で速い）
         if model_provider == ModelProvider.OPENAI:
-            llm = ChatOpenAI(model=model_name, temperature=0.7)
-            logger.success(f"OpenAI LLM created successfully: {model_name}")
+            llm = ChatOpenAI(model=model_name, temperature=0.3, max_tokens=2000)
+            logger.success(f"OpenAI LLM created successfully: {model_name} (temperature=0.3)")
             return llm
         elif model_provider == ModelProvider.ANTHROPIC:
-            llm = ChatAnthropic(model=model_name, temperature=0.7)
-            logger.success(f"Anthropic LLM created successfully: {model_name}")
+            llm = ChatAnthropic(model=model_name, temperature=0.3, max_tokens=2000)
+            logger.success(f"Anthropic LLM created successfully: {model_name} (temperature=0.3)")
             return llm
         else:
             raise ValueError(f"Unsupported model provider: {model_provider}")
@@ -89,30 +90,22 @@ def create_architect_node(
         log_callback("architect", "Architect is analyzing the task and designing a solution...")
         
         try:
-            system_prompt = f"""You are an Architect agent responsible for designing solutions and writing code.
+            system_prompt = f"""You are an Architect agent. Your goal is to complete tasks quickly and simply.
 
-Your role:
-1. Analyze the task requirements carefully
-2. Design a solution approach
-3. Write Python code to implement the solution
-4. Ensure code saves outputs to {runtime_output_path}/
+IMPORTANT: Prioritize speed and simplicity over perfection. Write minimal, working code.
 
-When you write code, wrap it in ```python code blocks. The code will be executed automatically.
-
-For document generation tasks:
-- Use libraries like markdown, json, csv, etc.
-- Save generated files to {runtime_output_path}/
-
-For search tasks (mock):
-- Simulate search results using sample data
-- Create CSV or JSON files with search results
-- Save results to {runtime_output_path}/
-
-Current task: {state['task_name']}
+Task: {state['task_name']}
 Description: {state['task_description']}
 Output path: {runtime_output_path}/
 
-Provide clear, well-commented code that accomplishes the task. Always wrap your code in ```python code blocks."""
+Instructions:
+1. Write simple Python code that accomplishes the task
+2. Save outputs to {runtime_output_path}/
+3. Wrap code in ```python code blocks
+4. Keep code concise - no unnecessary complexity
+5. If the task is simple, use straightforward solutions
+
+Write the code now. Be brief."""
         
             messages = state['messages'].copy()
             if not any(isinstance(msg, SystemMessage) for msg in messages):
@@ -155,17 +148,16 @@ def create_executor_node(
         log_callback("executor", "Executor is reviewing the code and execution results...")
         
         try:
-            system_prompt = """You are an Executor agent responsible for executing code and analyzing results.
+            system_prompt = """You are an Executor agent. Your goal is to quickly determine if the task is complete.
 
-Your role:
-1. Review code that was executed
-2. Analyze execution results (success or errors)
-3. Determine if the task is complete or if more work is needed
-4. If the task is complete, summarize the results
-5. If there are errors or the task needs more work, provide feedback to the architect
+IMPORTANT: If code executed successfully and outputs were created, mark the task as COMPLETE immediately.
 
-When code execution succeeds, verify that the outputs match the requirements.
-When code execution fails, analyze the error and suggest fixes."""
+Rules:
+1. If code executed successfully → Task is COMPLETE. Say "Task completed successfully."
+2. If there are minor errors but outputs exist → Task is COMPLETE. Say "Task completed successfully."
+3. Only if code completely failed with no outputs → Ask architect to fix it.
+
+Be brief. If successful, just say "Task completed successfully." and end."""
         
             messages = state['messages'].copy()
             if not any(isinstance(msg, SystemMessage) for msg in messages):
@@ -201,13 +193,34 @@ When code execution fails, analyze the error and suggest fixes."""
             
             log_callback("executor", response.content)
             
-            # Determine next step
+            # Determine next step - より緩い完了判定
             content_lower = response.content.lower()
             iteration_count = state.get("iteration_count", 0) + 1
-            logger.info(f"[Executor] Iteration {iteration_count}/{state.get('max_iterations', 50)}")
+            max_iterations = state.get('max_iterations', 10)
+            logger.info(f"[Executor] Iteration {iteration_count}/{max_iterations}")
             
-            if any(word in content_lower for word in ["complete", "finished", "done", "successfully completed"]):
-                logger.success("[Executor] Task marked as complete")
+            # 完了判定を緩和（より多くのキーワードで完了と判断）
+            completion_keywords = [
+                "complete", "finished", "done", "successfully", "completed",
+                "task completed", "success", "output", "saved", "created",
+                "finished successfully", "done successfully"
+            ]
+            
+            # コードが実行されていて、エラーがない場合は完了と判断
+            recent_messages = [str(msg.content).lower() for msg in messages[-5:]]
+            has_code_execution = any("execution result" in msg or "code execution" in msg for msg in recent_messages)
+            has_success = any("success: true" in msg or "success:true" in msg or "success:  true" in msg for msg in recent_messages)
+            has_no_error = not any("error:" in msg and "success: false" in msg for msg in recent_messages)
+            
+            # 完了条件: キーワードがある、またはコード実行成功、または最大イテレーション到達
+            is_complete = (
+                any(keyword in content_lower for keyword in completion_keywords) or 
+                (has_code_execution and has_success and has_no_error) or
+                iteration_count >= max_iterations
+            )
+            
+            if is_complete:
+                logger.success(f"[Executor] Task marked as complete (iteration {iteration_count})")
                 return {
                     **state,
                     "messages": messages,
@@ -235,9 +248,10 @@ def should_continue(state: AgentState) -> Literal["architect", "__end__"]:
         return "__end__"
     
     iteration_count = state.get("iteration_count", 0)
-    max_iterations = state.get("max_iterations", 50)
+    max_iterations = state.get("max_iterations", 2)
     
     if iteration_count >= max_iterations:
+        logger.warning(f"Reached max iterations ({max_iterations}), ending workflow")
         return "__end__"
     
     # Executor decides: continue with architect or end
@@ -304,10 +318,10 @@ def create_workflow(
     app = workflow.compile()
     logger.success("Workflow graph compiled successfully")
     
-    # Initial state
+    # Initial state - max_iterationsを3に削減（速度優先）
     initial_state = {
         "messages": [
-            HumanMessage(content=f"Task: {task_name}\n\nDescription: {task_description}\n\nPlease complete this task. Output files should be saved to {runtime_output_path}/")
+            HumanMessage(content=f"Task: {task_name}\n\nDescription: {task_description}\n\nComplete this task quickly. Save outputs to {runtime_output_path}/")
         ],
         "task_id": task_id,
         "task_name": task_name,
@@ -315,7 +329,7 @@ def create_workflow(
         "runtime_output_path": runtime_output_path,
         "current_agent": "architect",
         "iteration_count": 0,
-        "max_iterations": 50
+        "max_iterations": 2
     }
     
     logger.info("Workflow creation completed")

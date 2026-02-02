@@ -4,7 +4,8 @@ import { useState, useEffect } from "react";
 import TaskSidebar from "@/components/TaskSidebar";
 import TaskForm from "@/components/TaskForm";
 import { api } from "@/lib/api";
-import { Plus, Send, Loader2 } from "lucide-react";
+import { Plus, Send, Loader2, Download } from "lucide-react";
+import type { Artifact } from "@/lib/types";
 
 export default function Home() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -23,6 +24,8 @@ export default function Home() {
   const [requirementsDefined, setRequirementsDefined] = useState(false);
   const [executing, setExecuting] = useState(false);
   const [taskStatus, setTaskStatus] = useState<string | null>(null);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [loadingArtifacts, setLoadingArtifacts] = useState(false);
   const [sendOnEnter, setSendOnEnter] = useState<boolean>(() => {
     // localStorageから設定を読み込む（デフォルトはfalse = Shift+Enterで送信）
     if (typeof window !== 'undefined') {
@@ -38,8 +41,16 @@ export default function Home() {
       loadChatHistory();
     } else {
       setMessages([]);
+      setArtifacts([]);
     }
   }, [selectedTaskId]);
+
+  // タスクステータスが完了になったときに成果物を自動的に読み込む
+  useEffect(() => {
+    if (selectedTaskId && taskStatus === "completed") {
+      loadArtifacts(selectedTaskId);
+    }
+  }, [selectedTaskId, taskStatus]);
 
   const loadChatHistory = async (taskId?: string | null) => {
     const targetTaskId = taskId || selectedTaskId;
@@ -63,6 +74,11 @@ export default function Home() {
       } else {
         setRequirementsDefined(false);
       }
+      
+      // タスクが完了している場合は成果物を読み込む
+      if (task.status === "completed") {
+        loadArtifacts(targetTaskId);
+      }
     } catch (error) {
       console.error("Failed to load chat history:", error);
       setMessages([]);
@@ -71,6 +87,25 @@ export default function Home() {
     } finally {
       setLoadingChat(false);
     }
+  };
+
+  const loadArtifacts = async (taskId: string) => {
+    setLoadingArtifacts(true);
+    try {
+      const response = await api.getTaskArtifacts(taskId);
+      setArtifacts(response.artifacts);
+    } catch (error) {
+      console.error("Failed to load artifacts:", error);
+      setArtifacts([]);
+    } finally {
+      setLoadingArtifacts(false);
+    }
+  };
+
+  const handleDownloadArtifact = (artifact: Artifact) => {
+    if (!selectedTaskId) return;
+    const url = api.getArtifactDownloadUrl(selectedTaskId, artifact.path);
+    window.open(url, "_blank");
   };
 
   const handleTaskSelect = (taskId: string) => {
@@ -182,7 +217,14 @@ export default function Home() {
       const pollTaskStatus = async () => {
         try {
           const task = await api.getTask(selectedTaskId);
+          const previousStatus = taskStatus;
           setTaskStatus(task.status);
+          
+          // タスクが完了した場合、成果物を読み込む
+          if (task.status === "completed" && previousStatus !== "completed") {
+            await loadArtifacts(selectedTaskId);
+          }
+          
           if (task.status === "running") {
             // まだ実行中の場合は2秒後に再度確認
             setTimeout(pollTaskStatus, 2000);
@@ -328,6 +370,56 @@ export default function Home() {
                     タスクを実行中です...
                   </p>
                 </div>
+              </div>
+            )}
+
+            {/* タスク完了時の成果物表示 */}
+            {taskStatus === "completed" && (
+              <div className="border-t border-zinc-200 dark:border-zinc-800 p-4 bg-green-50 dark:bg-green-900/20">
+                <div className="mb-3">
+                  <h3 className="text-sm font-semibold text-green-800 dark:text-green-200 mb-1">
+                    タスクが完了しました
+                  </h3>
+                  <p className="text-xs text-green-600 dark:text-green-400">
+                    成果物をダウンロードできます
+                  </p>
+                </div>
+                {loadingArtifacts ? (
+                  <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-300">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    成果物を読み込み中...
+                  </div>
+                ) : artifacts.length > 0 ? (
+                  <div className="space-y-2">
+                    {artifacts.map((artifact) => (
+                      <div
+                        key={artifact.path}
+                        className="flex items-center justify-between p-3 bg-white dark:bg-zinc-800 rounded-lg border border-green-200 dark:border-green-800"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-sm text-zinc-900 dark:text-zinc-50 truncate">
+                            {artifact.name}
+                          </p>
+                          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                            {(artifact.size / 1024).toFixed(2)} KB
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleDownloadArtifact(artifact)}
+                          className="ml-4 p-2 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded-md transition-colors flex items-center gap-2"
+                          title="成果物をダウンロード"
+                        >
+                          <Download className="w-4 h-4" />
+                          <span className="text-sm">ダウンロード</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-green-700 dark:text-green-300">
+                    成果物はまだ生成されていません
+                  </div>
+                )}
               </div>
             )}
 
