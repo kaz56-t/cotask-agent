@@ -162,11 +162,17 @@ async def health():
 
 def invoke_chat_agent_with_langfuse(chat_agent, initial_state, session_id: str):
     """Langfuseコールバックを使用してチャットエージェントを実行するヘルパー関数"""
-    langfuse_handler = get_langfuse_handler(session_id=session_id)
+    langfuse_handler = get_langfuse_handler(
+        session_id=session_id,
+        trace_name="LangGraph Chat"
+    )
     config = {}
     if langfuse_handler:
         callback_manager = CallbackManager([langfuse_handler])
         config["callbacks"] = callback_manager
+        # Langfuseのトレース名を設定
+        config["metadata"] = {"trace_name": "LangGraph Chat"}
+        config["run_name"] = "LangGraph Chat"
     return chat_agent.invoke(initial_state, config=config if config else None)
 
 
@@ -749,10 +755,10 @@ async def run_task_background(task_id: str):
         # Langfuseコールバックハンドラーを取得（LangGraph実行用）
         langfuse_handler = get_langfuse_handler(
             task_id=task_id,
-            session_id=task.session_id
+            session_id=task.session_id,
+            trace_name="LangGraph Task"
         )
-        
-        # ワークフローを実行
+
         try:
             logger.info("Invoking workflow")
             # LangGraphのinvokeにコールバックを渡す
@@ -760,6 +766,8 @@ async def run_task_background(task_id: str):
             if langfuse_handler:
                 callback_manager = CallbackManager([langfuse_handler])
                 config["callbacks"] = callback_manager
+                config["metadata"] = {"trace_name": "LangGraph Task"}
+                config["run_name"] = "LangGraph Task"
             
             result = workflow.invoke(initial_state, config=config if config else None)
             logger.success("Workflow execution completed successfully")
