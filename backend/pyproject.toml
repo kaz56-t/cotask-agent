@@ -16,4 +16,5 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "docker>=7.0.0",
     "loguru>=0.7.0",
+    "grandalf>=0.8",
 ]

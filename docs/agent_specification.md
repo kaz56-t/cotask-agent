@@ -1,8 +1,20 @@
-# Agent仕様書
+# Agent仕様書（現時点版）
+
+> **⚠️ バージョン情報**: 本ドキュメントは**現在の実装状況（現時点版）**を反映しています。
+> - 作成日: 2024年
+> - 最終更新: 2024年
+> - ステータス: **現時点版（Phase 4実装時点）**
+> 
+> ※ 仕様は今後の開発に伴い変更される可能性があります。
 
 ## 概要
 
 CoTask Agentは、LangGraphベースのマルチエージェントシステムです。タスクの要件定義から実行までを自動化します。
+
+**現時点での実装状況**:
+- ✅ Phase 1-4: 基盤構築、要件定義チャット、マルチタスクUI、実行エージェント
+- 🔄 Phase 5: 成果物ダウンロード（実装中）
+- ⏳ Phase 6: Runtimeコンテナ分離（未実装）
 
 ## システムアーキテクチャ
 
@@ -117,21 +129,22 @@ class AgentState(TypedDict):
 ```
 
 **ワークフロー**:
-```mermaid
-graph TB
-    START[開始] --> ARCH[Architect Node]
-    ARCH -->|コード生成| EXEC[Executor Node]
-    EXEC -->|コード抽出| CODE[コード実行]
-    CODE -->|実行結果| EVAL{評価}
-    EVAL -->|完了| END[終了]
-    EVAL -->|再実行必要| CHECK{最大イテレーション?}
-    CHECK -->|未到達| ARCH
-    CHECK -->|到達| END
-    
-    style ARCH fill:#e8f5e9
-    style EXEC fill:#fce4ec
-    style CODE fill:#fff4e1
-```
+
+以下の図は、LangGraphの `get_graph().draw_mermaid()` メソッドを使用して実際の実装コードから自動生成されたワークフローグラフです。
+
+![Task Agent Workflow](images/task_agent_workflow.png)
+
+**ワークフローの説明**:
+1. **開始** (`__start__`) → **Architect Node** (`architect`)
+   - タスクの分析とコード生成を開始
+2. **Architect Node** → **Executor Node** (`executor`)
+   - 生成されたコードをExecutorに渡す
+3. **Executor Node** → **条件分岐**
+   - 完了判定により、以下のいずれかに分岐：
+     - `__end__`: タスク完了（実線矢印）
+     - `architect`: 再実行が必要（点線矢印）
+
+> **注**: 上記のグラフは `backend/generate_graph_images.py` を実行することで自動生成されます。実装コードと常に同期されます。
 
 #### 2.1 Architect Node
 
@@ -399,6 +412,65 @@ sequenceDiagram
 - 任意の形式（テキスト、JSON、画像、CSVなど）
 - Architectが生成したコードが決定
 
+## LangGraphグラフの生成方法
+
+### グラフ画像の自動生成
+
+LangGraphには、ワークフローを自動的に可視化する機能が組み込まれています。以下のスクリプトを使用して、実際のワークフロー構造を画像として出力できます：
+
+**使用方法**:
+
+```bash
+cd backend
+python generate_graph_images.py
+```
+
+**生成されるファイル**:
+- `docs/images/task_agent_workflow.mmd` - Mermaid形式のグラフ定義（✅ 生成済み）
+- `docs/images/task_agent_workflow.png` - PNG画像（✅ 生成済み）
+- `docs/images/task_agent_workflow.txt` - ASCII形式のテキスト図（✅ 生成済み）
+
+> **📁 ファイル参照**: 生成されたファイルは [`docs/images/`](images/) ディレクトリに保存されています。
+
+**コード例**:
+
+```python
+from langgraph.graph import StateGraph
+
+# ワークフローを作成
+app = create_workflow(...)
+
+# グラフを取得
+graph = app.get_graph()
+
+# Mermaid形式で出力
+mermaid_code = graph.draw_mermaid()
+print(mermaid_code)
+
+# PNG画像として出力（可能な場合）
+try:
+    png_data = graph.draw_mermaid_png()
+    if png_data:
+        with open("workflow.png", "wb") as f:
+            f.write(png_data)
+except Exception as e:
+    print(f"PNG generation not available: {e}")
+
+# ASCII形式で出力
+ascii_diagram = graph.draw_ascii()
+print(ascii_diagram)
+```
+
+**メリット**:
+- 実装コードから自動的にグラフ構造を抽出
+- コードと図が常に同期される
+- 手動で図を更新する必要がない
+- 実際のLangGraph構造を正確に反映
+
+**生成されたグラフファイル**:
+- 実際に生成されたグラフファイルは `docs/images/` ディレクトリに保存されています
+- これらのファイルは実装コードから自動生成されるため、コード変更時は再実行してください
+
 ## 今後の拡張予定
 
 1. **Phase 6**: Runtimeコンテナ分離
@@ -412,3 +484,7 @@ sequenceDiagram
 3. **モデル選択**
    - UIからモデル選択機能の強化
    - モデルごとの最適化
+
+---
+
+**注意**: 本ドキュメントは現時点（Phase 4実装時点）の仕様を記載しています。今後の開発により、仕様が変更される可能性があります。
