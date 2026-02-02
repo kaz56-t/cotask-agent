@@ -36,6 +36,7 @@ from database import init_db, get_db, ChatSession, ChatMessage, Task, TaskStatus
 from chat_agent import create_chat_agent, format_messages_for_langgraph
 from langchain_core.messages import HumanMessage
 from agents import create_workflow
+from executor import RuntimeExecutor
 
 app = FastAPI(title="CoTask Agent API", version="0.1.0")
 
@@ -656,12 +657,22 @@ async def run_task_background(task_id: str):
             f"{msg.role}: {msg.content}" for msg in messages[-5:]  # 最後の5メッセージ
         ])
         
-        # 成果物の出力パス
+        # 成果物の出力パス（ホスト側）
         artifacts_dir = Path("/app/data/artifacts")
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         task_artifacts_dir = artifacts_dir / task_id
         task_artifacts_dir.mkdir(parents=True, exist_ok=True)
-        runtime_output_path = str(task_artifacts_dir)
+        
+        # Runtimeコンテナ内の出力パス
+        runtime_output_path = f"/workspace/outputs/{task_id}"
+        
+        # RuntimeExecutorを初期化（Phase 6: Runtimeコンテナで実行）
+        try:
+            runtime_executor = RuntimeExecutor()
+            logger.info("RuntimeExecutor initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize RuntimeExecutor: {e}")
+            raise
         
         # ログコールバック関数
         def log_callback(role: str, content: str):
@@ -678,35 +689,16 @@ async def run_task_background(task_id: str):
                 logger.error(f"Failed to save task log: {e}")
                 logger.debug(f"Log content: {content[:500]}")
         
-        # コード実行関数（Phase 4: 同一コンテナ内で実行）
+        # コード実行関数（Phase 6: Runtimeコンテナで実行）
         def execute_code_func(code: str) -> str:
-            """コードを実行して結果を返す（Phase 4: 同一コンテナ内実行）"""
-            import subprocess
-            import tempfile
-            import sys
-            
+            """コードを実行して結果を返す（Phase 6: Runtimeコンテナ実行）"""
             try:
-                # 一時ファイルにコードを保存
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-                    f.write(code)
-                    temp_file = f.name
-                
-                # コードを実行
-                result = subprocess.run(
-                    [sys.executable, temp_file],
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    cwd=str(task_artifacts_dir)
+                # Runtimeコンテナでコードを実行
+                success, stdout, stderr = runtime_executor.execute_code(
+                    code=code,
+                    task_id=task_id,
+                    timeout=300
                 )
-                
-                # 一時ファイルを削除
-                import os
-                os.unlink(temp_file)
-                
-                success = result.returncode == 0
-                stdout = result.stdout
-                stderr = result.stderr
                 
                 result_str = f"Success: {success}\n"
                 if stdout:
@@ -717,12 +709,8 @@ async def run_task_background(task_id: str):
                 log_callback("executor", f"Code execution result:\n{result_str}")
                 return result_str
                 
-            except subprocess.TimeoutExpired:
-                error_msg = "Code execution timed out after 300 seconds"
-                log_callback("executor", f"Error: {error_msg}")
-                return f"Error: {error_msg}"
             except Exception as e:
-                error_msg = f"Error executing code: {str(e)}"
+                error_msg = f"Error executing code in runtime container: {str(e)}"
                 log_callback("executor", error_msg)
                 return f"Error: {error_msg}"
         
@@ -752,13 +740,51 @@ async def run_task_background(task_id: str):
             logger.success("Workflow execution completed successfully")
             log_callback("system", "Task execution completed successfully")
             
-            # 成果物を確認（Phase 4: ローカルファイルシステムから確認）
+            # Phase 6: 成果物を確認（ボリュームマウントで自動的に共有される）
+            # ボリュームマウントにより、Runtimeコンテナ内の/workspace/outputs/{task_id}が
+            # ホスト側の./backend/data/artifacts/{task_id}に自動的にマウントされている
+            logger.info("Checking for artifacts...")
+            
+            # 少し待ってから成果物を確認（ファイルシステムの同期を待つ）
+            import time
+            time.sleep(1)
+            
+            # 成果物を確認
             if task_artifacts_dir.exists():
                 artifacts = list(task_artifacts_dir.iterdir())
                 if artifacts:
                     artifact_path = str(task_artifacts_dir)
                     task.artifact_path = artifact_path
-                    log_callback("system", f"Artifacts saved to: {artifact_path}")
+                    log_callback("system", f"Artifacts available at: {artifact_path}")
+                    logger.success(f"Found {len(artifacts)} artifact(s) in {artifact_path}")
+                else:
+                    logger.warning("No artifacts found in artifacts directory")
+                    # 念のため、Runtimeコンテナからコピーを試みる
+                    logger.info("Attempting to copy artifacts from runtime container...")
+                    copy_success = runtime_executor.copy_artifacts_from_container(
+                        task_id=task_id,
+                        host_artifacts_dir=str(task_artifacts_dir)
+                    )
+                    if copy_success:
+                        artifacts = list(task_artifacts_dir.iterdir())
+                        if artifacts:
+                            artifact_path = str(task_artifacts_dir)
+                            task.artifact_path = artifact_path
+                            log_callback("system", f"Artifacts copied from runtime container to: {artifact_path}")
+            else:
+                logger.warning("Artifacts directory does not exist")
+                # 念のため、Runtimeコンテナからコピーを試みる
+                logger.info("Attempting to copy artifacts from runtime container...")
+                copy_success = runtime_executor.copy_artifacts_from_container(
+                    task_id=task_id,
+                    host_artifacts_dir=str(task_artifacts_dir)
+                )
+                if copy_success and task_artifacts_dir.exists():
+                    artifacts = list(task_artifacts_dir.iterdir())
+                    if artifacts:
+                        artifact_path = str(task_artifacts_dir)
+                        task.artifact_path = artifact_path
+                        log_callback("system", f"Artifacts copied from runtime container to: {artifact_path}")
             
             # タスクを完了状態に更新
             task.status = TaskStatus.COMPLETED.value

@@ -2,8 +2,9 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (including Docker client)
 RUN apt-get update && apt-get install -y \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency files
