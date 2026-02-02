@@ -12,12 +12,15 @@ services:
       - ./backend:/app
       - /app/.venv  # Python仮想環境を除外
       - ./backend/data:/app/data  # データベースファイルの永続化
+      - /var/run/docker.sock:/var/run/docker.sock  # Dockerソケットをマウント（Runtimeコンテナ制御用）
     env_file:
       - .env  # .envファイルを環境変数として読み込む
     environment:
       - PYTHONUNBUFFERED=1
     networks:
       - cotask-network
+    depends_on:
+      - runtime
     restart: unless-stopped
 
   frontend:
@@ -38,6 +41,17 @@ services:
       - cotask-network
     depends_on:
       - backend
+    restart: unless-stopped
+
+  runtime:
+    build:
+      context: ./runtime
+      dockerfile: Dockerfile
+    container_name: cotask-agent-runtime
+    volumes:
+      - ./backend/data/artifacts:/workspace/outputs  # 成果物を共有
+    networks:
+      - cotask-network
     restart: unless-stopped
 
 networks:
