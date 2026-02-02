@@ -61,6 +61,9 @@ class Task(Base):
     # タスクとチャットセッションを1対1で紐付け
     session_id = Column(String, ForeignKey("chat_sessions.id"), nullable=True, unique=True)
     session = relationship("ChatSession", back_populates="task", uselist=False)
+    
+    # タスクログのリレーション
+    logs = relationship("TaskLog", back_populates="task", cascade="all, delete-orphan")
 
 
 class ChatSession(Base):
@@ -88,6 +91,20 @@ class ChatMessage(Base):
     
     # リレーション
     session = relationship("ChatSession", back_populates="messages")
+
+
+class TaskLog(Base):
+    """タスクログテーブル（Phase 4）"""
+    __tablename__ = "task_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
+    role = Column(String, nullable=False)  # "architect", "executor", "system", etc.
+    content = Column(Text, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # リレーション
+    task = relationship("Task", back_populates="logs")
 
 
 def init_db():

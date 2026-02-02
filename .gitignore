@@ -105,6 +105,7 @@ logs/
 *.bak
 *.backup
 
-# AutoGen / Agent related
+# Agent related
 .agent_cache/
 agent_outputs/
+backend/data/

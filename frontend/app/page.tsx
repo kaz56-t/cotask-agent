@@ -22,6 +22,15 @@ export default function Home() {
   const [loadingChat, setLoadingChat] = useState(false);
   const [requirementsDefined, setRequirementsDefined] = useState(false);
   const [executing, setExecuting] = useState(false);
+  const [taskStatus, setTaskStatus] = useState<string | null>(null);
+  const [sendOnEnter, setSendOnEnter] = useState<boolean>(() => {
+    // localStorageから設定を読み込む（デフォルトはfalse = Shift+Enterで送信）
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('sendOnEnter');
+      return saved === 'true';
+    }
+    return false;
+  });
 
   // タスクが選択されたときにチャット履歴を読み込む
   useEffect(() => {
@@ -38,8 +47,12 @@ export default function Home() {
 
     setLoadingChat(true);
     try {
-      const chatSession = await api.getTaskChat(targetTaskId);
+      const [chatSession, task] = await Promise.all([
+        api.getTaskChat(targetTaskId),
+        api.getTask(targetTaskId)
+      ]);
       setMessages(chatSession.messages);
+      setTaskStatus(task.status);
       
       // 最後のメッセージで要件が確定しているか確認
       const lastMessage = chatSession.messages[chatSession.messages.length - 1];
@@ -54,6 +67,7 @@ export default function Home() {
       console.error("Failed to load chat history:", error);
       setMessages([]);
       setRequirementsDefined(false);
+      setTaskStatus(null);
     } finally {
       setLoadingChat(false);
     }
@@ -152,6 +166,9 @@ export default function Home() {
     try {
       const result = await api.executeTask(selectedTaskId);
       
+      // タスクステータスを更新
+      setTaskStatus("running");
+      
       // 実行開始のメッセージを表示
       const executeMessage = {
         id: Date.now(),
@@ -160,11 +177,33 @@ export default function Home() {
         timestamp: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, executeMessage]);
+      
+      // タスクステータスをポーリングして更新
+      const pollTaskStatus = async () => {
+        try {
+          const task = await api.getTask(selectedTaskId);
+          setTaskStatus(task.status);
+          if (task.status === "running") {
+            // まだ実行中の場合は2秒後に再度確認
+            setTimeout(pollTaskStatus, 2000);
+          }
+        } catch (error) {
+          console.error("Failed to poll task status:", error);
+        }
+      };
+      setTimeout(pollTaskStatus, 2000);
     } catch (error) {
       console.error("Failed to execute task:", error);
       alert("タスクの実行に失敗しました。要件が確定しているか確認してください。");
     } finally {
       setExecuting(false);
+    }
+  };
+
+  const handleSendModeChange = (mode: boolean) => {
+    setSendOnEnter(mode);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('sendOnEnter', mode.toString());
     }
   };
 
@@ -251,7 +290,7 @@ export default function Home() {
             </div>
 
             {/* 要件確定時の実行ボタン */}
-            {requirementsDefined && (
+            {requirementsDefined && taskStatus !== "running" && taskStatus !== "completed" && taskStatus !== "failed" && (
               <div className="border-t border-zinc-200 dark:border-zinc-800 p-4 bg-green-50 dark:bg-green-900/20">
                 <div className="flex items-center justify-between">
                   <div>
@@ -279,24 +318,73 @@ export default function Home() {
                 </div>
               </div>
             )}
+            
+            {/* 実行中の表示 */}
+            {taskStatus === "running" && (
+              <div className="border-t border-zinc-200 dark:border-zinc-800 p-4 bg-blue-50 dark:bg-blue-900/20">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                  <p className="text-sm font-medium text-blue-800 dark:text-blue-200">
+                    タスクを実行中です...
+                  </p>
+                </div>
+              </div>
+            )}
 
             {/* メッセージ入力欄 */}
             <div className="border-t border-zinc-200 dark:border-zinc-800 p-4">
+              {/* 送信方法の切り替え */}
+              <div className="mb-2 flex items-center justify-end gap-2">
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">送信方法:</span>
+                <div className="flex gap-1 bg-zinc-100 dark:bg-zinc-800 rounded-md p-1">
+                  <button
+                    type="button"
+                    onClick={() => handleSendModeChange(false)}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${
+                      !sendOnEnter
+                        ? "bg-blue-600 text-white"
+                        : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+                    }`}
+                  >
+                    Shift+Enter
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSendModeChange(true)}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${
+                      sendOnEnter
+                        ? "bg-blue-600 text-white"
+                        : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+                    }`}
+                  >
+                    Enter
+                  </button>
+                </div>
+              </div>
               <form onSubmit={handleSubmit} className="flex gap-2">
                 <textarea
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   onKeyDown={(e) => {
-                    // Shift+Enterで送信、Enterだけでは改行（何もしない）
-                    if (e.key === "Enter" && e.shiftKey) {
-                      e.preventDefault();
-                      if (message.trim() && !loading) {
-                        handleSubmit(e as any);
+                    if (sendOnEnter) {
+                      // Enterで送信、Shift+Enterで改行
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        if (message.trim() && !loading) {
+                          handleSubmit(e as any);
+                        }
+                      }
+                    } else {
+                      // Shift+Enterで送信、Enterだけでは改行
+                      if (e.key === "Enter" && e.shiftKey) {
+                        e.preventDefault();
+                        if (message.trim() && !loading) {
+                          handleSubmit(e as any);
+                        }
                       }
                     }
-                    // Enterだけの場合は何もしない（デフォルトの改行動作を許可）
                   }}
-                  placeholder="メッセージを入力... (Shift+Enterで送信)"
+                  placeholder={sendOnEnter ? "メッセージを入力... (Enterで送信、Shift+Enterで改行)" : "メッセージを入力... (Shift+Enterで送信、Enterで改行)"}
                   rows={3}
                   className="flex-1 px-4 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-black dark:text-zinc-50 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                   disabled={loading}
