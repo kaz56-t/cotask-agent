@@ -13,48 +13,48 @@ def get_langfuse_handler(
     trace_name: Optional[str] = None
 ) -> Optional[CallbackHandler]:
     """
-    Langfuseのコールバックハンドラーを取得する。
+    Get Langfuse callback handler.
     
     Args:
-        task_id: タスクID（オプション）
-        session_id: セッションID（オプション）
-        user_id: ユーザーID（オプション）
-        trace_name: トレース名（オプション）
+        task_id: Task ID (optional)
+        session_id: Session ID (optional)
+        user_id: User ID (optional)
+        trace_name: Trace name (optional)
     
     Returns:
-        LangfuseCallbackHandlerまたはNone（Langfuseが無効な場合）
+        LangfuseCallbackHandler or None (if Langfuse is disabled)
     """
-    # 環境変数からLangfuseの設定を取得
-    # Docker内部通信の場合はコンテナ名を使用、外部からの場合はlocalhostを使用
+    # Get Langfuse configuration from environment variables
+    # Use container name for Docker internal communication, localhost for external access
     langfuse_host = os.getenv("LANGFUSE_BASE_URL", "http://langfuse:3000")
     langfuse_public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
     langfuse_secret_key = os.getenv("LANGFUSE_SECRET_KEY")
     
-    # Langfuseが無効な場合（環境変数が設定されていない場合）
+    # Langfuse is disabled if environment variables are not set
     if not langfuse_public_key or not langfuse_secret_key:
         logger.debug("Langfuse is not configured (LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY not set)")
         return None
     
     try:
-        # 環境変数を明示的に設定（CallbackHandlerが環境変数から読み取るため）
-        # 既に設定されている場合は上書きされない
+        # Explicitly set environment variables (CallbackHandler reads from environment variables)
+        # Won't overwrite if already set
         os.environ.setdefault("LANGFUSE_PUBLIC_KEY", langfuse_public_key)
         os.environ.setdefault("LANGFUSE_SECRET_KEY", langfuse_secret_key)
         os.environ.setdefault("LANGFUSE_HOST", langfuse_host)
         
-        # Langfuseクライアントを初期化（手動トラッキング用）
+        # Initialize Langfuse client (for manual tracking)
         langfuse = Langfuse(
             public_key=langfuse_public_key,
             secret_key=langfuse_secret_key,
             host=langfuse_host
         )
         
-        # コールバックハンドラーを作成
-        # CallbackHandlerは環境変数から認証情報を読み取るため、パラメータを渡さない
-        # trace_nameがある場合は、invoke時のconfigで設定する
+        # Create callback handler
+        # CallbackHandler reads credentials from environment variables, so don't pass parameters
+        # If trace_name exists, set it in config during invoke
         handler = CallbackHandler()
         
-        # trace_nameをハンドラーに保存（後でconfigで使用）
+        # Save trace_name to handler (for later use in config)
         if trace_name:
             handler._trace_name = trace_name
         
@@ -73,16 +73,16 @@ def get_langfuse_trace(
     name: Optional[str] = None
 ):
     """
-    Langfuseのトレースオブジェクトを取得する（手動トラッキング用）。
+    Get Langfuse trace object (for manual tracking).
     
     Args:
-        task_id: タスクID（オプション）
-        session_id: セッションID（オプション）
-        user_id: ユーザーID（オプション）
-        name: トレース名（オプション）
+        task_id: Task ID (optional)
+        session_id: Session ID (optional)
+        user_id: User ID (optional)
+        name: Trace name (optional)
     
     Returns:
-        LangfuseトレースオブジェクトまたはNone
+        Langfuse trace object or None
     """
     langfuse_host = os.getenv("LANGFUSE_HOST", "http://langfuse:3000")
     langfuse_public_key = os.getenv("LANGFUSE_PUBLIC_KEY")

@@ -1,6 +1,6 @@
 """
-データベース設定とモデル定義
-SQLite/SQLAlchemyによるチャット履歴の永続化
+Database configuration and model definitions
+Chat history persistence with SQLite/SQLAlchemy
 """
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, Enum as SQLEnum
 from sqlalchemy.ext.declarative import declarative_base
@@ -10,15 +10,15 @@ import os
 import enum
 from pathlib import Path
 
-# データベースディレクトリの作成
+# Create database directory
 db_dir = Path("/app/data")
 db_dir.mkdir(exist_ok=True)
 
-# データベースファイルのパス
+# Database file path
 db_path = db_dir / "cotask.db"
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{db_path}")
 
-# エンジンとセッションの作成
+# Create engine and session
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -26,22 +26,22 @@ Base = declarative_base()
 
 
 class TaskStatus(enum.Enum):
-    """タスクのステータス"""
-    PENDING = "pending"  # 定義中
-    RUNNING = "running"  # 実行中
-    COMPLETED = "completed"  # 完了
-    FAILED = "failed"  # 失敗
-    CANCELLED = "cancelled"  # キャンセル
+    """Task status"""
+    PENDING = "pending"  # Defining
+    RUNNING = "running"  # Running
+    COMPLETED = "completed"  # Completed
+    FAILED = "failed"  # Failed
+    CANCELLED = "cancelled"  # Cancelled
 
 
 class ModelProvider(enum.Enum):
-    """モデルプロバイダー"""
+    """Model provider"""
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
 
 
 class Task(Base):
-    """タスクテーブル（Phase 3）"""
+    """Task table (Phase 3)"""
     __tablename__ = "tasks"
 
     id = Column(String, primary_key=True)
@@ -49,7 +49,7 @@ class Task(Base):
     description = Column(Text, nullable=False)
     model_provider = Column(String, nullable=False)  # "openai" or "anthropic"
     model_name = Column(String, nullable=False)
-    # SQLiteではEnumを直接サポートしていないため、Stringとして保存
+    # SQLite doesn't directly support Enum, so save as String
     status = Column(String, default=TaskStatus.PENDING.value, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -58,29 +58,29 @@ class Task(Base):
     error_message = Column(Text, nullable=True)
     artifact_path = Column(String, nullable=True)
     
-    # タスクとチャットセッションを1対1で紐付け
+    # Link task and chat session one-to-one
     session_id = Column(String, ForeignKey("chat_sessions.id"), nullable=True, unique=True)
     session = relationship("ChatSession", back_populates="task", uselist=False)
     
-    # タスクログのリレーション
+    # Task log relationship
     logs = relationship("TaskLog", back_populates="task", cascade="all, delete-orphan")
 
 
 class ChatSession(Base):
-    """チャットセッションテーブル"""
+    """Chat session table"""
     __tablename__ = "chat_sessions"
 
     id = Column(String, primary_key=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # リレーション
+    # Relationships
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
     task = relationship("Task", back_populates="session", uselist=False)
 
 
 class ChatMessage(Base):
-    """チャットメッセージテーブル"""
+    """Chat message table"""
     __tablename__ = "chat_messages"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -89,12 +89,12 @@ class ChatMessage(Base):
     content = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow)
     
-    # リレーション
+    # Relationships
     session = relationship("ChatSession", back_populates="messages")
 
 
 class TaskLog(Base):
-    """タスクログテーブル（Phase 4）"""
+    """Task log table (Phase 4)"""
     __tablename__ = "task_logs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -103,17 +103,17 @@ class TaskLog(Base):
     content = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow)
     
-    # リレーション
+    # Relationships
     task = relationship("Task", back_populates="logs")
 
 
 def init_db():
-    """データベースの初期化（テーブル作成）"""
+    """Initialize database (create tables)"""
     Base.metadata.create_all(bind=engine)
 
 
 def get_db():
-    """データベースセッションの取得"""
+    """Get database session"""
     db = SessionLocal()
     try:
         yield db

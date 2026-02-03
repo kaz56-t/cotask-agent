@@ -13,12 +13,12 @@ from pathlib import Path
 from loguru import logger
 import sys
 
-# .envファイルを読み込む（ローカル開発環境用のフォールバック）
-# docker-compose.ymlでenv_fileを指定している場合は、環境変数として既に利用可能
+# Load .env file (fallback for local development environment)
+# If env_file is specified in docker-compose.yml, environment variables are already available
 load_dotenv()
 
-# Loguruの設定
-logger.remove()  # デフォルトのハンドラを削除
+# Loguru configuration
+logger.remove()  # Remove default handler
 logger.add(
     sys.stdout,
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
@@ -42,33 +42,33 @@ from langfuse_config import get_langfuse_handler
 
 app = FastAPI(title="CoTask Agent API", version="0.1.0")
 
-# CORS設定
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://frontend:3000"],  # Next.jsのデフォルトポートとDocker内部通信
+    allow_origins=["http://localhost:3000", "http://frontend:3000"],  # Next.js default port and Docker internal communication
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# アプリケーション起動時にデータベースを初期化
+# Initialize database on application startup
 @app.on_event("startup")
 async def startup_event():
     init_db()
-    # チャットエージェントをグローバルに初期化（必要に応じて）
+    # Initialize chat agent globally (if needed)
     try:
-        # 環境変数を確認
+        # Check environment variables
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            print("警告: OPENAI_API_KEY環境変数が設定されていません。")
-            print("docker-compose.ymlでenv_fileを指定しているか、.envファイルを確認してください。")
+            print("Warning: OPENAI_API_KEY environment variable is not set.")
+            print("Please check if env_file is specified in docker-compose.yml or check the .env file.")
             app.state.chat_agent = None
         else:
             app.state.chat_agent = create_chat_agent()
-            print("チャットエージェントの初期化に成功しました")
+            print("Chat agent initialized successfully")
     except Exception as e:
-        print(f"警告: チャットエージェントの初期化に失敗しました: {e}")
+        print(f"Warning: Failed to initialize chat agent: {e}")
         import traceback
         traceback.print_exc()
         app.state.chat_agent = None
@@ -86,8 +86,8 @@ class ChatMessageResponse(BaseModel):
     role: str
     content: str
     timestamp: str
-    requirements_defined: Optional[bool] = False  # 要件が確定したかどうか
-    requirements_summary: Optional[str] = None  # 要件の要約
+    requirements_defined: Optional[bool] = False  # Whether requirements are defined
+    requirements_summary: Optional[str] = None  # Requirements summary
 
 
 class ChatSessionResponse(BaseModel):
@@ -97,7 +97,7 @@ class ChatSessionResponse(BaseModel):
     messages: List[ChatMessageResponse]
 
 
-# Phase 3: タスク管理のPydanticモデル
+# Phase 3: Task management Pydantic models
 class TaskCreate(BaseModel):
     name: str
     description: str
@@ -161,7 +161,7 @@ async def health():
 
 
 def invoke_chat_agent_with_langfuse(chat_agent, initial_state, session_id: str):
-    """Langfuseコールバックを使用してチャットエージェントを実行するヘルパー関数"""
+    """Helper function to execute chat agent with Langfuse callback"""
     langfuse_handler = get_langfuse_handler(
         session_id=session_id,
         trace_name="LangGraph Chat"
@@ -170,7 +170,7 @@ def invoke_chat_agent_with_langfuse(chat_agent, initial_state, session_id: str):
     if langfuse_handler:
         callback_manager = CallbackManager([langfuse_handler])
         config["callbacks"] = callback_manager
-        # Langfuseのトレース名を設定
+        # Set Langfuse trace name
         config["metadata"] = {"trace_name": "LangGraph Chat"}
         config["run_name"] = "LangGraph Chat"
     return chat_agent.invoke(initial_state, config=config if config else None)
@@ -182,10 +182,10 @@ async def chat(
     db: Session = Depends(get_db)
 ):
     """
-    Phase 2: LangGraphによる対話フローとDB保存
-    ユーザーのメッセージを受け取り、AIが応答を生成してDBに保存
+    Phase 2: LangGraph conversation flow and DB persistence
+    Receives user message, generates AI response, and saves to DB
     """
-    # セッションIDが指定されていない場合は新規作成
+    # Create new session if session_id is not specified
     if not request.session_id:
         session_id = str(uuid.uuid4())
         session = ChatSession(id=session_id)
@@ -195,10 +195,10 @@ async def chat(
     else:
         session = db.query(ChatSession).filter(ChatSession.id == request.session_id).first()
         if not session:
-            raise HTTPException(status_code=404, detail="セッションが見つかりません")
+            raise HTTPException(status_code=404, detail="Session not found")
         session_id = request.session_id
     
-    # ユーザーメッセージをDBに保存
+    # Save user message to DB
     user_message = ChatMessage(
         session_id=session_id,
         role="user",
@@ -207,7 +207,7 @@ async def chat(
     db.add(user_message)
     db.commit()
     
-    # 既存のメッセージを取得してLangGraph形式に変換
+    # Get existing messages and convert to LangGraph format
     existing_messages = db.query(ChatMessage).filter(
         ChatMessage.session_id == session_id
     ).order_by(ChatMessage.timestamp).all()
@@ -217,12 +217,12 @@ async def chat(
         for msg in existing_messages
     ])
     
-    # LangGraphでAI応答を生成
+    # Generate AI response with LangGraph
     requirements_defined = False
     requirements_summary = None
     try:
         if app.state.chat_agent:
-            # チャットエージェントを実行（初期状態を設定）
+            # Execute chat agent (set initial state)
             initial_state = {
                 "messages": messages_for_agent,
                 "requirements_defined": False,
@@ -233,15 +233,15 @@ async def chat(
             requirements_defined = result.get("requirements_defined", False)
             requirements_summary = result.get("requirements_summary", None)
         else:
-            # フォールバック: エージェントが初期化されていない場合
-            ai_response_content = "申し訳ございませんが、AIエージェントが利用できません。環境変数OPENAI_API_KEYが設定されているか確認してください。"
+            # Fallback: when agent is not initialized
+            ai_response_content = "Sorry, the AI agent is not available. Please check if the OPENAI_API_KEY environment variable is set."
     except Exception as e:
-        print(f"エラー: AI応答の生成に失敗しました: {e}")
+        print(f"Error: Failed to generate AI response: {e}")
         import traceback
         traceback.print_exc()
-        ai_response_content = f"エラーが発生しました: {str(e)}"
+        ai_response_content = f"An error occurred: {str(e)}"
     
-    # AI応答をDBに保存
+    # Save AI response to DB
     ai_message = ChatMessage(
         session_id=session_id,
         role="assistant",
@@ -249,7 +249,7 @@ async def chat(
     )
     db.add(ai_message)
     
-    # セッションの更新時刻を更新
+    # Update session update time
     session.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(ai_message)
@@ -270,10 +270,10 @@ async def get_chat_session(
     session_id: str,
     db: Session = Depends(get_db)
 ):
-    """指定されたセッションIDのチャット履歴を取得"""
+    """Get chat history for the specified session ID"""
     session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
     if not session:
-        raise HTTPException(status_code=404, detail="セッションが見つかりません")
+        raise HTTPException(status_code=404, detail="Session not found")
     
     messages = db.query(ChatMessage).filter(
         ChatMessage.session_id == session_id
@@ -298,7 +298,7 @@ async def get_chat_session(
 
 @app.post("/api/chat/sessions", response_model=ChatSessionResponse)
 async def create_chat_session(db: Session = Depends(get_db)):
-    """新しいチャットセッションを作成"""
+    """Create a new chat session"""
     session_id = str(uuid.uuid4())
     session = ChatSession(id=session_id)
     db.add(session)
@@ -319,27 +319,27 @@ async def execute_task(
     db: Session = Depends(get_db)
 ):
     """
-    要件が確定したタスクを実行
-    Phase 4で本格実装予定、今はモック
+    Execute task with defined requirements
+    Full implementation planned for Phase 4, currently a mock
     """
-    # セッションの確認
+    # Check session
     session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
     if not session:
-        raise HTTPException(status_code=404, detail="セッションが見つかりません")
+        raise HTTPException(status_code=404, detail="Session not found")
     
-    # チャット履歴を取得して要件を確認
+    # Get chat history and check requirements
     messages = db.query(ChatMessage).filter(
         ChatMessage.session_id == session_id
     ).order_by(ChatMessage.timestamp).all()
     
-    # 最後のメッセージで要件が確定しているか確認
+    # Check if requirements are defined in the last message
     last_message = messages[-1] if messages else None
     if not last_message or last_message.role != "assistant":
-        raise HTTPException(status_code=400, detail="要件が確定していません")
+        raise HTTPException(status_code=400, detail="Requirements are not defined")
     
-    # 実行開始のメッセージを返す（Phase 4で実装予定）
+    # Return execution start message (full implementation planned for Phase 4)
     return {
-        "message": "タスクの実行を開始しました。\n\n（Phase 4で本格実装予定）",
+        "message": "Task execution started.\n\n(Full implementation planned for Phase 4)",
         "session_id": session_id,
         "status": "executing"
     }
@@ -351,18 +351,18 @@ async def create_task(
     task_data: TaskCreate,
     db: Session = Depends(get_db)
 ):
-    """新しいタスクを作成"""
-    # タスクIDを生成
+    """Create a new task"""
+    # Generate task ID
     task_id = str(uuid.uuid4())
     
-    # チャットセッションを作成（タスクごとに独立したチャット履歴）
+    # Create chat session (independent chat history for each task)
     session_id = str(uuid.uuid4())
     session = ChatSession(id=session_id)
     db.add(session)
     db.commit()
     db.refresh(session)
     
-    # タスクを作成
+    # Create task
     task = Task(
         id=task_id,
         name=task_data.name,
@@ -376,20 +376,20 @@ async def create_task(
     db.commit()
     db.refresh(task)
     
-    # タスク作成時に、説明を基にAIが要件定義を開始
-    # ユーザーメッセージとしてタスクの説明を保存
+    # When creating a task, AI starts requirements definition based on description
+    # Save task description as user message
     initial_user_message = ChatMessage(
         session_id=session_id,
         role="user",
-        content=f"タスク名: {task_data.name}\n\n{task_data.description}"
+        content=f"Task name: {task_data.name}\n\n{task_data.description}"
     )
     db.add(initial_user_message)
     db.commit()
     
-    # AIが要件定義を開始（推測を入れずに要件を定義し、不明点を確認）
+    # AI starts requirements definition (define requirements without assumptions, confirm unclear points)
     try:
         if app.state.chat_agent:
-            # 既存のメッセージを取得してLangGraph形式に変換
+            # Get existing messages and convert to LangGraph format
             existing_messages = db.query(ChatMessage).filter(
                 ChatMessage.session_id == session_id
             ).order_by(ChatMessage.timestamp).all()
@@ -399,7 +399,7 @@ async def create_task(
                 for msg in existing_messages
             ])
             
-            # チャットエージェントを実行（初期状態を設定）
+            # Execute chat agent (set initial state)
             initial_state = {
                 "messages": messages_for_agent,
                 "requirements_defined": False,
@@ -408,7 +408,7 @@ async def create_task(
             result = invoke_chat_agent_with_langfuse(app.state.chat_agent, initial_state, session_id)
             ai_response_content = result["messages"][-1].content
             
-            # AI応答をDBに保存
+            # Save AI response to DB
             ai_message = ChatMessage(
                 session_id=session_id,
                 role="assistant",
@@ -416,27 +416,27 @@ async def create_task(
             )
             db.add(ai_message)
             
-            # セッションの更新時刻を更新
+            # Update session update time
             session.updated_at = datetime.utcnow()
             db.commit()
         else:
-            # フォールバック: エージェントが初期化されていない場合
+            # Fallback: when agent is not initialized
             ai_message = ChatMessage(
                 session_id=session_id,
                 role="assistant",
-                content="申し訳ございませんが、AIエージェントが利用できません。環境変数OPENAI_API_KEYが設定されているか確認してください。"
+                content="Sorry, the AI agent is not available. Please check if the OPENAI_API_KEY environment variable is set."
             )
             db.add(ai_message)
             db.commit()
     except Exception as e:
-        print(f"エラー: 初期要件定義の生成に失敗しました: {e}")
+        print(f"Error: Failed to generate initial requirements definition: {e}")
         import traceback
         traceback.print_exc()
-        # エラーが発生してもタスクは作成する
+        # Create task even if error occurs
         ai_message = ChatMessage(
             session_id=session_id,
             role="assistant",
-            content=f"エラーが発生しました: {str(e)}"
+            content=f"An error occurred: {str(e)}"
         )
         db.add(ai_message)
         db.commit()
@@ -465,17 +465,17 @@ async def get_tasks(
     status: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """タスク一覧を取得"""
+    """Get task list"""
     query = db.query(Task)
     
-    # ステータスでフィルタリング
+    # Filter by status
     if status:
         query = query.filter(Task.status == status)
     
-    # 総数を取得
+    # Get total count
     total = query.count()
     
-    # ページネーション
+    # Pagination
     tasks = query.order_by(desc(Task.created_at)).offset(skip).limit(limit).all()
     
     return TaskListResponse(
@@ -506,10 +506,10 @@ async def get_task(
     task_id: str,
     db: Session = Depends(get_db)
 ):
-    """特定のタスクを取得"""
+    """Get a specific task"""
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
-        raise HTTPException(status_code=404, detail="タスクが見つかりません")
+        raise HTTPException(status_code=404, detail="Task not found")
     
     return TaskResponse(
         id=task.id,
@@ -533,17 +533,17 @@ async def get_task_chat(
     task_id: str,
     db: Session = Depends(get_db)
 ):
-    """タスクに関連付けられたチャット履歴を取得"""
+    """Get chat history associated with a task"""
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
-        raise HTTPException(status_code=404, detail="タスクが見つかりません")
+        raise HTTPException(status_code=404, detail="Task not found")
     
     if not task.session_id:
-        raise HTTPException(status_code=404, detail="タスクにチャットセッションが関連付けられていません")
+        raise HTTPException(status_code=404, detail="Task has no associated chat session")
     
     session = db.query(ChatSession).filter(ChatSession.id == task.session_id).first()
     if not session:
-        raise HTTPException(status_code=404, detail="チャットセッションが見つかりません")
+        raise HTTPException(status_code=404, detail="Chat session not found")
     
     messages = db.query(ChatMessage).filter(
         ChatMessage.session_id == task.session_id
@@ -572,21 +572,21 @@ async def send_task_message(
     request: ChatMessageRequest,
     db: Session = Depends(get_db)
 ):
-    """タスクに関連付けられたチャットセッションにメッセージを送信"""
+    """Send message to chat session associated with a task"""
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
-        raise HTTPException(status_code=404, detail="タスクが見つかりません")
+        raise HTTPException(status_code=404, detail="Task not found")
     
     if not task.session_id:
-        raise HTTPException(status_code=404, detail="タスクにチャットセッションが関連付けられていません")
+        raise HTTPException(status_code=404, detail="Task has no associated chat session")
     
-    # 既存のチャットエンドポイントと同じロジックを使用
+    # Use the same logic as the existing chat endpoint
     session_id = task.session_id
     session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
     if not session:
-        raise HTTPException(status_code=404, detail="セッションが見つかりません")
+        raise HTTPException(status_code=404, detail="Session not found")
     
-    # ユーザーメッセージをDBに保存
+    # Save user message to DB
     user_message = ChatMessage(
         session_id=session_id,
         role="user",
@@ -595,7 +595,7 @@ async def send_task_message(
     db.add(user_message)
     db.commit()
     
-    # 既存のメッセージを取得してLangGraph形式に変換
+    # Get existing messages and convert to LangGraph format
     existing_messages = db.query(ChatMessage).filter(
         ChatMessage.session_id == session_id
     ).order_by(ChatMessage.timestamp).all()
@@ -605,12 +605,12 @@ async def send_task_message(
         for msg in existing_messages
     ])
     
-    # LangGraphでAI応答を生成
+    # Generate AI response with LangGraph
     requirements_defined = False
     requirements_summary = None
     try:
         if app.state.chat_agent:
-            # チャットエージェントを実行（初期状態を設定）
+            # Execute chat agent (set initial state)
             initial_state = {
                 "messages": messages_for_agent,
                 "requirements_defined": False,
@@ -621,15 +621,15 @@ async def send_task_message(
             requirements_defined = result.get("requirements_defined", False)
             requirements_summary = result.get("requirements_summary", None)
         else:
-            # フォールバック: エージェントが初期化されていない場合
-            ai_response_content = "申し訳ございませんが、AIエージェントが利用できません。環境変数OPENAI_API_KEYが設定されているか確認してください。"
+            # Fallback: when agent is not initialized
+            ai_response_content = "Sorry, the AI agent is not available. Please check if the OPENAI_API_KEY environment variable is set."
     except Exception as e:
-        print(f"エラー: AI応答の生成に失敗しました: {e}")
+        print(f"Error: Failed to generate AI response: {e}")
         import traceback
         traceback.print_exc()
-        ai_response_content = f"エラーが発生しました: {str(e)}"
+        ai_response_content = f"An error occurred: {str(e)}"
     
-    # AI応答をDBに保存
+    # Save AI response to DB
     ai_message = ChatMessage(
         session_id=session_id,
         role="assistant",
@@ -637,7 +637,7 @@ async def send_task_message(
     )
     db.add(ai_message)
     
-    # セッションの更新時刻を更新
+    # Update session update time
     session.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(ai_message)
@@ -654,7 +654,7 @@ async def send_task_message(
 
 
 async def run_task_background(task_id: str):
-    """バックグラウンドでタスクを実行する関数"""
+    """Function to execute task in background"""
     logger.info(f"Starting background task execution: {task_id}")
     db = next(get_db())
     try:
@@ -665,26 +665,26 @@ async def run_task_background(task_id: str):
         
         logger.info(f"Task found: {task.name} (status: {task.status})")
         
-        # チャット履歴から要件を抽出
+        # Extract requirements from chat history
         messages = db.query(ChatMessage).filter(
             ChatMessage.session_id == task.session_id
         ).order_by(ChatMessage.timestamp).all()
         
-        # 要件の要約を作成（チャット履歴から）
+        # Create requirements summary (from chat history)
         requirements_summary = "\n".join([
-            f"{msg.role}: {msg.content}" for msg in messages[-5:]  # 最後の5メッセージ
+            f"{msg.role}: {msg.content}" for msg in messages[-5:]  # Last 5 messages
         ])
         
-        # 成果物の出力パス（ホスト側）
+        # Artifact output path (host side)
         artifacts_dir = Path("/app/data/artifacts")
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         task_artifacts_dir = artifacts_dir / task_id
         task_artifacts_dir.mkdir(parents=True, exist_ok=True)
         
-        # Runtimeコンテナ内の出力パス
+        # Output path in Runtime container
         runtime_output_path = f"/workspace/outputs/{task_id}"
         
-        # RuntimeExecutorを初期化（Phase 6: Runtimeコンテナで実行）
+        # Initialize RuntimeExecutor (Phase 6: Execute in Runtime container)
         try:
             runtime_executor = RuntimeExecutor()
             logger.info("RuntimeExecutor initialized successfully")
@@ -692,7 +692,7 @@ async def run_task_background(task_id: str):
             logger.error(f"Failed to initialize RuntimeExecutor: {e}")
             raise
         
-        # ログコールバック関数
+        # Log callback function
         def log_callback(role: str, content: str):
             try:
                 log_entry = TaskLog(
@@ -707,11 +707,11 @@ async def run_task_background(task_id: str):
                 logger.error(f"Failed to save task log: {e}")
                 logger.debug(f"Log content: {content[:500]}")
         
-        # コード実行関数（Phase 6: Runtimeコンテナで実行）
+        # Code execution function (Phase 6: Execute in Runtime container)
         def execute_code_func(code: str) -> str:
-            """コードを実行して結果を返す（Phase 6: Runtimeコンテナ実行）"""
+            """Execute code and return result (Phase 6: Runtime container execution)"""
             try:
-                # Runtimeコンテナでコードを実行
+                # Execute code in Runtime container
                 success, stdout, stderr = runtime_executor.execute_code(
                     code=code,
                     task_id=task_id,
@@ -732,17 +732,17 @@ async def run_task_background(task_id: str):
                 log_callback("executor", error_msg)
                 return f"Error: {error_msg}"
         
-        # モデルプロバイダーの設定
+        # Set model provider
         model_provider = ModelProvider.OPENAI if task.model_provider == "openai" else ModelProvider.ANTHROPIC
         
-        # エージェントワークフローを作成
+        # Create agent workflow
         logger.info("Creating agent workflow")
         workflow, initial_state = create_workflow(
             model_provider=model_provider,
             model_name=task.model_name,
             task_id=task_id,
             task_name=task.name,
-            task_description=task.description + "\n\n要件:\n" + requirements_summary,
+            task_description=task.description + "\n\nRequirements:\n" + requirements_summary,
             runtime_output_path=runtime_output_path,
             execute_code_func=execute_code_func,
             log_callback=log_callback,
@@ -752,7 +752,7 @@ async def run_task_background(task_id: str):
         logger.info("Workflow created, starting execution")
         log_callback("system", f"Starting task execution: {task.name}")
         
-        # Langfuseコールバックハンドラーを取得（LangGraph実行用）
+        # Get Langfuse callback handler (for LangGraph execution)
         langfuse_handler = get_langfuse_handler(
             task_id=task_id,
             session_id=task.session_id,
@@ -761,7 +761,7 @@ async def run_task_background(task_id: str):
 
         try:
             logger.info("Invoking workflow")
-            # LangGraphのinvokeにコールバックを渡す
+            # Pass callback to LangGraph invoke
             config = {}
             if langfuse_handler:
                 callback_manager = CallbackManager([langfuse_handler])
@@ -773,16 +773,16 @@ async def run_task_background(task_id: str):
             logger.success("Workflow execution completed successfully")
             log_callback("system", "Task execution completed successfully")
             
-            # Phase 6: 成果物を確認（ボリュームマウントで自動的に共有される）
-            # ボリュームマウントにより、Runtimeコンテナ内の/workspace/outputs/{task_id}が
-            # ホスト側の./backend/data/artifacts/{task_id}に自動的にマウントされている
+            # Phase 6: Check artifacts (automatically shared via volume mount)
+            # Volume mount automatically mounts /workspace/outputs/{task_id} in Runtime container
+            # to ./backend/data/artifacts/{task_id} on host side
             logger.info("Checking for artifacts...")
             
-            # 少し待ってから成果物を確認（ファイルシステムの同期を待つ）
+            # Wait a bit before checking artifacts (wait for filesystem sync)
             import time
             time.sleep(1)
             
-            # 成果物を確認
+            # Check artifacts
             if task_artifacts_dir.exists():
                 artifacts = list(task_artifacts_dir.iterdir())
                 if artifacts:
@@ -792,7 +792,7 @@ async def run_task_background(task_id: str):
                     logger.success(f"Found {len(artifacts)} artifact(s) in {artifact_path}")
                 else:
                     logger.warning("No artifacts found in artifacts directory")
-                    # 念のため、Runtimeコンテナからコピーを試みる
+                    # Try copying from Runtime container as a fallback
                     logger.info("Attempting to copy artifacts from runtime container...")
                     copy_success = runtime_executor.copy_artifacts_from_container(
                         task_id=task_id,
@@ -806,7 +806,7 @@ async def run_task_background(task_id: str):
                             log_callback("system", f"Artifacts copied from runtime container to: {artifact_path}")
             else:
                 logger.warning("Artifacts directory does not exist")
-                # 念のため、Runtimeコンテナからコピーを試みる
+                # Try copying from Runtime container as a fallback
                 logger.info("Attempting to copy artifacts from runtime container...")
                 copy_success = runtime_executor.copy_artifacts_from_container(
                     task_id=task_id,
@@ -819,7 +819,7 @@ async def run_task_background(task_id: str):
                         task.artifact_path = artifact_path
                         log_callback("system", f"Artifacts copied from runtime container to: {artifact_path}")
             
-            # タスクを完了状態に更新
+            # Update task to completed status
             task.status = TaskStatus.COMPLETED.value
             task.completed_at = datetime.utcnow()
             db.commit()
@@ -842,7 +842,7 @@ async def run_task_background(task_id: str):
         error_traceback = traceback.format_exc()
         logger.error(f"Traceback: {error_traceback}")
         db.rollback()
-        # タスクを失敗状態に更新
+        # Update task to failed status
         try:
             task = db.query(Task).filter(Task.id == task_id).first()
             if task:
@@ -863,55 +863,55 @@ async def execute_task(
     task_id: str,
     db: Session = Depends(get_db)
 ):
-    """タスクを実行（要件が確定している場合）"""
+    """Execute task (when requirements are defined)"""
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
-        raise HTTPException(status_code=404, detail="タスクが見つかりません")
+        raise HTTPException(status_code=404, detail="Task not found")
     
-    # 既に実行中または完了している場合はエラー
+    # Error if already running or completed
     if task.status == TaskStatus.RUNNING.value:
-        raise HTTPException(status_code=400, detail="タスクは既に実行中です")
+        raise HTTPException(status_code=400, detail="Task is already running")
     if task.status == TaskStatus.COMPLETED.value:
-        raise HTTPException(status_code=400, detail="タスクは既に完了しています")
+        raise HTTPException(status_code=400, detail="Task is already completed")
     
     if not task.session_id:
-        raise HTTPException(status_code=404, detail="タスクにチャットセッションが関連付けられていません")
+        raise HTTPException(status_code=404, detail="Task has no associated chat session")
     
-    # セッションの確認
+    # Check session
     session = db.query(ChatSession).filter(ChatSession.id == task.session_id).first()
     if not session:
-        raise HTTPException(status_code=404, detail="セッションが見つかりません")
+        raise HTTPException(status_code=404, detail="Session not found")
     
-    # チャット履歴を取得して要件が確定しているか確認
+    # Get chat history and check if requirements are defined
     messages = db.query(ChatMessage).filter(
         ChatMessage.session_id == task.session_id
     ).order_by(ChatMessage.timestamp).all()
     
-    # 最後のメッセージで要件が確定しているか確認
+    # Check if requirements are defined in the last message
     last_message = messages[-1] if messages else None
     if not last_message or last_message.role != "assistant":
-        raise HTTPException(status_code=400, detail="要件が確定していません")
+        raise HTTPException(status_code=400, detail="Requirements are not defined")
     
-    # 要件確定のマーカーを確認
+    # Check requirements definition marker
     if "[要件確定]" not in last_message.content and "要件確定" not in last_message.content:
-        raise HTTPException(status_code=400, detail="要件が確定していません。チャットで要件を確定させてください。")
+        raise HTTPException(status_code=400, detail="Requirements are not defined. Please define requirements in the chat.")
     
-    # タスクのステータスを更新
+    # Update task status
     task.status = TaskStatus.RUNNING.value
     task.started_at = datetime.utcnow()
     db.commit()
     
-    # バックグラウンドでタスクを実行
+    # Execute task in background
     asyncio.create_task(run_task_background(task_id))
     
     return {
-        "message": "タスクの実行を開始しました。",
+        "message": "Task execution started.",
         "task_id": task_id,
         "status": "running"
     }
 
 
-# Phase 4: タスクログと成果物のAPI
+# Phase 4: Task logs and artifacts API
 @app.get("/api/tasks/{task_id}/logs", response_model=List[TaskLogResponse])
 async def get_task_logs(
     task_id: str,
@@ -919,10 +919,10 @@ async def get_task_logs(
     limit: int = 1000,
     db: Session = Depends(get_db)
 ):
-    """タスクのログを取得"""
+    """Get task logs"""
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
-        raise HTTPException(status_code=404, detail="タスクが見つかりません")
+        raise HTTPException(status_code=404, detail="Task not found")
     
     logs = db.query(TaskLog).filter(
         TaskLog.task_id == task_id
@@ -945,10 +945,10 @@ async def get_task_artifacts(
     task_id: str,
     db: Session = Depends(get_db)
 ):
-    """タスクの成果物一覧を取得"""
+    """Get task artifacts list"""
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
-        raise HTTPException(status_code=404, detail="タスクが見つかりません")
+        raise HTTPException(status_code=404, detail="Task not found")
     
     artifacts = []
     if task.artifact_path:
@@ -956,7 +956,7 @@ async def get_task_artifacts(
         if artifacts_dir.exists():
             for file_path in artifacts_dir.iterdir():
                 if file_path.is_file():
-                    # パスは成果物ディレクトリからの相対パスにする
+                    # Make path relative to artifacts directory
                     relative_path = file_path.relative_to(artifacts_dir)
                     artifacts.append(ArtifactResponse(
                         name=file_path.name,
@@ -973,27 +973,27 @@ async def download_artifact(
     file_path: str,
     db: Session = Depends(get_db)
 ):
-    """成果物ファイルをダウンロード"""
+    """Download artifact file"""
     from fastapi.responses import FileResponse
     
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
-        raise HTTPException(status_code=404, detail="タスクが見つかりません")
+        raise HTTPException(status_code=404, detail="Task not found")
     
     if not task.artifact_path:
-        raise HTTPException(status_code=404, detail="成果物が見つかりません")
+        raise HTTPException(status_code=404, detail="Artifacts not found")
     
     artifacts_dir = Path(task.artifact_path)
     full_path = artifacts_dir / file_path
     
     if not full_path.exists() or not full_path.is_file():
-        raise HTTPException(status_code=404, detail="ファイルが見つかりません")
+        raise HTTPException(status_code=404, detail="File not found")
     
-    # セキュリティチェック: パストラバーサル攻撃を防ぐ
+    # Security check: prevent path traversal attacks
     try:
         full_path.resolve().relative_to(artifacts_dir.resolve())
     except ValueError:
-        raise HTTPException(status_code=403, detail="無効なファイルパスです")
+        raise HTTPException(status_code=403, detail="Invalid file path")
     
     return FileResponse(
         path=str(full_path),
@@ -1002,18 +1002,18 @@ async def download_artifact(
     )
 
 
-# Phase 1との互換性のため、旧エンドポイントも残す
+# Keep old endpoint for compatibility with Phase 1
 @app.post("/api/chat/legacy")
 async def chat_legacy(message: dict):
     """
-    Phase 1用の簡単なチャットエンドポイント（互換性のため残す）
-    入力欄から「こんにちは」と送ると、「[定型文] 受信しました」と返す
+    Simple chat endpoint for Phase 1 (kept for compatibility)
+    Returns "[Template] Received" when "こんにちは" is sent from input field
     """
     user_message = message.get("message", "")
     
-    # Phase 1の要件: 「こんにちは」を受け取ったら「[定型文] 受信しました」を返す
+    # Phase 1 requirement: Return "[Template] Received" when "こんにちは" is received
     if user_message == "こんにちは":
-        return {"response": "[定型文] 受信しました"}
+        return {"response": "[Template] Received"}
     
-    # その他のメッセージにも対応
-    return {"response": f"[定型文] 受信しました: {user_message}"}
+    # Handle other messages as well
+    return {"response": f"[Template] Received: {user_message}"}

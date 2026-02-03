@@ -3,8 +3,10 @@
 import { useState, useEffect } from "react";
 import TaskSidebar from "@/components/TaskSidebar";
 import TaskForm from "@/components/TaskForm";
+import SettingsModal from "@/components/SettingsModal";
 import { api } from "@/lib/api";
-import { Plus, Send, Loader2, Download } from "lucide-react";
+import { Plus, Send, Loader2, Download, Settings } from "lucide-react";
+import { t, getLanguage, setLanguage } from "@/lib/i18n";
 import type { Artifact } from "@/lib/types";
 
 export default function Home() {
@@ -26,8 +28,10 @@ export default function Home() {
   const [taskStatus, setTaskStatus] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [loadingArtifacts, setLoadingArtifacts] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [language, setLanguageState] = useState(getLanguage());
   const [sendOnEnter, setSendOnEnter] = useState<boolean>(() => {
-    // localStorageから設定を読み込む（デフォルトはfalse = Shift+Enterで送信）
+    // Load settings from localStorage (default is false = send with Shift+Enter)
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('sendOnEnter');
       return saved === 'true';
@@ -35,7 +39,16 @@ export default function Home() {
     return false;
   });
 
-  // タスクが選択されたときにチャット履歴を読み込む
+  // Listen for language changes
+  useEffect(() => {
+    const handleLanguageChange = () => {
+      setLanguageState(getLanguage());
+    };
+    window.addEventListener('languagechange', handleLanguageChange);
+    return () => window.removeEventListener('languagechange', handleLanguageChange);
+  }, []);
+
+  // Load chat history when task is selected
   useEffect(() => {
     if (selectedTaskId) {
       loadChatHistory();
@@ -45,7 +58,7 @@ export default function Home() {
     }
   }, [selectedTaskId]);
 
-  // タスクステータスが完了になったときに成果物を自動的に読み込む
+  // Automatically load artifacts when task status becomes completed
   useEffect(() => {
     if (selectedTaskId && taskStatus === "completed") {
       loadArtifacts(selectedTaskId);
@@ -65,7 +78,7 @@ export default function Home() {
       setMessages(chatSession.messages);
       setTaskStatus(task.status);
       
-      // 最後のメッセージで要件が確定しているか確認
+      // Check if requirements are defined in the last message
       const lastMessage = chatSession.messages[chatSession.messages.length - 1];
       if (lastMessage && lastMessage.role === "assistant") {
         const isDefined = lastMessage.content.includes("[要件確定]") || 
@@ -75,7 +88,7 @@ export default function Home() {
         setRequirementsDefined(false);
       }
       
-      // タスクが完了している場合は成果物を読み込む
+      // Load artifacts if task is completed
       if (task.status === "completed") {
         loadArtifacts(targetTaskId);
       }
@@ -115,15 +128,15 @@ export default function Home() {
 
   const handleTaskCreated = async () => {
     setShowTaskForm(false);
-    // サイドバーが自動的に更新される（ポーリングのため）
-    // 少し待ってから最新のタスクを選択（新しく作成されたタスクを自動選択）
+    // Sidebar will automatically update (due to polling)
+    // Wait a bit then select the latest task (auto-select newly created task)
     setTimeout(async () => {
       try {
         const response = await api.getTasks({ limit: 1 });
         if (response.tasks.length > 0) {
           const newTask = response.tasks[0];
           setSelectedTaskId(newTask.id);
-          // チャット履歴を読み込む（新しく作成されたタスクのIDを渡す）
+          // Load chat history (pass ID of newly created task)
           await loadChatHistory(newTask.id);
         }
       } catch (error) {
@@ -141,7 +154,7 @@ export default function Home() {
     setMessage("");
     setLoading(true);
 
-    // ユーザーメッセージを即座に表示
+    // Display user message immediately
     const tempUserMessage = {
       id: Date.now(),
       role: "user",
@@ -153,14 +166,14 @@ export default function Home() {
     try {
       const response = await api.sendTaskMessage(selectedTaskId, userMessage);
       
-      // 要件確定フラグを更新
+      // Update requirements defined flag
       if (response.requirements_defined) {
         setRequirementsDefined(true);
       }
       
-      // 応答を追加
+      // Add response
       setMessages((prev) => {
-        // 一時的なユーザーメッセージを実際のメッセージに置き換え
+        // Replace temporary user message with actual message
         const filtered = prev.filter((msg) => msg.id !== tempUserMessage.id);
         return [
           ...filtered,
@@ -176,7 +189,8 @@ export default function Home() {
       });
     } catch (error) {
       console.error("Failed to send message:", error);
-      // エラーメッセージを表示
+      // Display error message
+      const translations = t();
       setMessages((prev) => {
         const filtered = prev.filter((msg) => msg.id !== tempUserMessage.id);
         return [
@@ -184,7 +198,7 @@ export default function Home() {
           {
             id: Date.now(),
             role: "assistant",
-            content: "エラー: メッセージの送信に失敗しました",
+            content: translations.chat.failedToSend,
             timestamp: new Date().toISOString(),
           },
         ];
@@ -201,10 +215,10 @@ export default function Home() {
     try {
       const result = await api.executeTask(selectedTaskId);
       
-      // タスクステータスを更新
+      // Update task status
       setTaskStatus("running");
       
-      // 実行開始のメッセージを表示
+      // Display execution start message
       const executeMessage = {
         id: Date.now(),
         role: "assistant",
@@ -213,20 +227,20 @@ export default function Home() {
       };
       setMessages((prev) => [...prev, executeMessage]);
       
-      // タスクステータスをポーリングして更新
+      // Poll task status and update
       const pollTaskStatus = async () => {
         try {
           const task = await api.getTask(selectedTaskId);
           const previousStatus = taskStatus;
           setTaskStatus(task.status);
           
-          // タスクが完了した場合、成果物を読み込む
+          // Load artifacts if task is completed
           if (task.status === "completed" && previousStatus !== "completed") {
             await loadArtifacts(selectedTaskId);
           }
           
           if (task.status === "running") {
-            // まだ実行中の場合は2秒後に再度確認
+            // Check again after 2 seconds if still running
             setTimeout(pollTaskStatus, 2000);
           }
         } catch (error) {
@@ -236,7 +250,8 @@ export default function Home() {
       setTimeout(pollTaskStatus, 2000);
     } catch (error) {
       console.error("Failed to execute task:", error);
-      alert("タスクの実行に失敗しました。要件が確定しているか確認してください。");
+      const translations = t();
+      alert(translations.chat.failedToExecute);
     } finally {
       setExecuting(false);
     }
@@ -249,9 +264,11 @@ export default function Home() {
     }
   };
 
+  const translations = t();
+
   return (
     <div className="flex h-screen bg-zinc-50 dark:bg-black">
-      {/* サイドバー */}
+      {/* Sidebar */}
       <div className="w-80 flex-shrink-0 border-r border-zinc-200 dark:border-zinc-800">
         <TaskSidebar
           selectedTaskId={selectedTaskId}
@@ -259,39 +276,48 @@ export default function Home() {
         />
       </div>
 
-      {/* メインコンテンツエリア */}
+      {/* Main content area */}
       <div className="flex-1 flex flex-col">
-        {/* ページ上部ヘッダー */}
+        {/* Page header */}
         <div className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-          <div className="p-4">
-            {showTaskForm ? (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">新しいタスクを作成</h3>
-                  <button
-                    onClick={() => setShowTaskForm(false)}
-                    className="text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200 p-1 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                  >
-                    ✕
-                  </button>
+          <div className="p-4 flex items-center justify-between">
+            <div className="flex-1">
+              {showTaskForm ? (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{translations.task.createNewTask}</h3>
+                    <button
+                      onClick={() => setShowTaskForm(false)}
+                      className="text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200 p-1 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <TaskForm onTaskCreated={handleTaskCreated} />
                 </div>
-                <TaskForm onTaskCreated={handleTaskCreated} />
-              </div>
-            ) : (
-              <button
-                onClick={() => setShowTaskForm(true)}
-                className="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                <Plus className="w-4 h-4" />
-                新しいタスク
-              </button>
-            )}
+              ) : (
+                <button
+                  onClick={() => setShowTaskForm(true)}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  {translations.task.newTask}
+                </button>
+              )}
+            </div>
+            <button
+              onClick={() => setShowSettingsModal(true)}
+              className="ml-4 p-2 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              title={translations.common.settings}
+            >
+              <Settings className="w-5 h-5" />
+            </button>
           </div>
         </div>
 
         {selectedTaskId ? (
           <>
-            {/* チャット履歴 */}
+            {/* Chat history */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {loadingChat ? (
                 <div className="flex items-center justify-center h-full">
@@ -299,7 +325,7 @@ export default function Home() {
                 </div>
               ) : messages.length === 0 ? (
                 <div className="flex items-center justify-center h-full text-zinc-500 dark:text-zinc-400">
-                  メッセージがありません。メッセージを送信して会話を始めましょう。
+                  {translations.chat.noMessagesMessage}
                 </div>
               ) : (
                 messages.map((msg) => (
@@ -320,7 +346,7 @@ export default function Home() {
                         {msg.content}
                       </p>
                       <p className="text-xs mt-1 opacity-70">
-                        {new Date(msg.timestamp).toLocaleTimeString("ja-JP", {
+                        {new Date(msg.timestamp).toLocaleTimeString(language === 'ja' ? "ja-JP" : "en-US", {
                           hour: "2-digit",
                           minute: "2-digit",
                         })}
@@ -331,16 +357,16 @@ export default function Home() {
               )}
             </div>
 
-            {/* 要件確定時の実行ボタン */}
+            {/* Execute button when requirements are defined */}
             {requirementsDefined && taskStatus !== "running" && taskStatus !== "completed" && taskStatus !== "failed" && (
               <div className="border-t border-zinc-200 dark:border-zinc-800 p-4 bg-green-50 dark:bg-green-900/20">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-green-800 dark:text-green-200 mb-1">
-                      要件が確定しました
+                      {translations.chat.requirementsDefined}
                     </p>
                     <p className="text-xs text-green-600 dark:text-green-400">
-                      タスクを実行できます
+                      {translations.chat.requirementsDefinedMessage}
                     </p>
                   </div>
                   <button
@@ -351,43 +377,43 @@ export default function Home() {
                     {executing ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        実行中...
+                        {translations.chat.executing}
                       </>
                     ) : (
-                      "タスクを実行"
+                      translations.chat.executeTask
                     )}
                   </button>
                 </div>
               </div>
             )}
             
-            {/* 実行中の表示 */}
+            {/* Running status display */}
             {taskStatus === "running" && (
               <div className="border-t border-zinc-200 dark:border-zinc-800 p-4 bg-blue-50 dark:bg-blue-900/20">
                 <div className="flex items-center gap-2">
                   <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
                   <p className="text-sm font-medium text-blue-800 dark:text-blue-200">
-                    タスクを実行中です...
+                    {translations.chat.taskRunning}
                   </p>
                 </div>
               </div>
             )}
 
-            {/* タスク完了時の成果物表示 */}
+            {/* Artifacts display when task is completed */}
             {taskStatus === "completed" && (
               <div className="border-t border-zinc-200 dark:border-zinc-800 p-4 bg-green-50 dark:bg-green-900/20">
                 <div className="mb-3">
                   <h3 className="text-sm font-semibold text-green-800 dark:text-green-200 mb-1">
-                    タスクが完了しました
+                    {translations.chat.taskCompleted}
                   </h3>
                   <p className="text-xs text-green-600 dark:text-green-400">
-                    成果物をダウンロードできます
+                    {translations.chat.taskCompletedMessage}
                   </p>
                 </div>
                 {loadingArtifacts ? (
                   <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-300">
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    成果物を読み込み中...
+                    {translations.chat.artifactsLoading}
                   </div>
                 ) : artifacts.length > 0 ? (
                   <div className="space-y-2">
@@ -407,59 +433,31 @@ export default function Home() {
                         <button
                           onClick={() => handleDownloadArtifact(artifact)}
                           className="ml-4 p-2 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded-md transition-colors flex items-center gap-2"
-                          title="成果物をダウンロード"
+                          title={translations.common.download}
                         >
                           <Download className="w-4 h-4" />
-                          <span className="text-sm">ダウンロード</span>
+                          <span className="text-sm">{translations.common.download}</span>
                         </button>
                       </div>
                     ))}
                   </div>
                 ) : (
                   <div className="text-sm text-green-700 dark:text-green-300">
-                    成果物はまだ生成されていません
+                    {translations.chat.artifactsNotGenerated}
                   </div>
                 )}
               </div>
             )}
 
-            {/* メッセージ入力欄 */}
+            {/* Message input area */}
             <div className="border-t border-zinc-200 dark:border-zinc-800 p-4">
-              {/* 送信方法の切り替え */}
-              <div className="mb-2 flex items-center justify-end gap-2">
-                <span className="text-xs text-zinc-500 dark:text-zinc-400">送信方法:</span>
-                <div className="flex gap-1 bg-zinc-100 dark:bg-zinc-800 rounded-md p-1">
-                  <button
-                    type="button"
-                    onClick={() => handleSendModeChange(false)}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${
-                      !sendOnEnter
-                        ? "bg-blue-600 text-white"
-                        : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
-                    }`}
-                  >
-                    Shift+Enter
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleSendModeChange(true)}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${
-                      sendOnEnter
-                        ? "bg-blue-600 text-white"
-                        : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
-                    }`}
-                  >
-                    Enter
-                  </button>
-                </div>
-              </div>
               <form onSubmit={handleSubmit} className="flex gap-2">
                 <textarea
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   onKeyDown={(e) => {
                     if (sendOnEnter) {
-                      // Enterで送信、Shift+Enterで改行
+                      // Send with Enter, newline with Shift+Enter
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
                         if (message.trim() && !loading) {
@@ -467,7 +465,7 @@ export default function Home() {
                         }
                       }
                     } else {
-                      // Shift+Enterで送信、Enterだけでは改行
+                      // Send with Shift+Enter, newline with Enter only
                       if (e.key === "Enter" && e.shiftKey) {
                         e.preventDefault();
                         if (message.trim() && !loading) {
@@ -476,7 +474,7 @@ export default function Home() {
                       }
                     }
                   }}
-                  placeholder={sendOnEnter ? "メッセージを入力... (Enterで送信、Shift+Enterで改行)" : "メッセージを入力... (Shift+Enterで送信、Enterで改行)"}
+                  placeholder={sendOnEnter ? translations.chat.enterMessagePlaceholder : translations.chat.enterMessagePlaceholderShift}
                   rows={3}
                   className="flex-1 px-4 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-black dark:text-zinc-50 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                   disabled={loading}
@@ -491,7 +489,7 @@ export default function Home() {
                   ) : (
                     <Send className="w-4 h-4" />
                   )}
-                  送信
+                  {translations.common.send}
                 </button>
               </form>
             </div>
@@ -499,14 +497,22 @@ export default function Home() {
         ) : (
           <div className="flex-1 flex items-center justify-center text-zinc-500 dark:text-zinc-400">
             <div className="text-center">
-              <p className="text-lg mb-2">タスクを選択してください</p>
+              <p className="text-lg mb-2">{translations.task.selectTask}</p>
               <p className="text-sm">
-                左側のサイドバーからタスクを選択するか、上部の「新しいタスク」ボタンからタスクを作成してください。
+                {translations.task.selectTaskMessage}
               </p>
             </div>
           </div>
         )}
       </div>
+      
+      {/* Settings Modal */}
+      <SettingsModal
+        isOpen={showSettingsModal}
+        onClose={() => setShowSettingsModal(false)}
+        sendOnEnter={sendOnEnter}
+        onSendModeChange={handleSendModeChange}
+      />
     </div>
   );
 }

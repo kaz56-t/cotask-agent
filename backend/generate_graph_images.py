@@ -1,12 +1,12 @@
 """
-LangGraphのワークフローグラフを画像として出力するスクリプト
+Script to output LangGraph workflow graph as images
 """
 import os
 from pathlib import Path
 from typing import TypedDict, Annotated, Literal
 from langgraph.graph import StateGraph, END
 
-# 簡易的な状態定義（実際のAgentStateと同じ構造）
+# Simplified state definition (same structure as actual AgentState)
 class AgentState(TypedDict):
     messages: Annotated[list, lambda x, y: x + y]
     task_id: str
@@ -19,7 +19,7 @@ class AgentState(TypedDict):
 
 
 def create_sample_workflow():
-    """サンプルワークフローを作成（実際のagents.pyと同じ構造）"""
+    """Create sample workflow (same structure as actual agents.py)"""
     def architect_node(state: AgentState) -> AgentState:
         return state
     
@@ -38,7 +38,7 @@ def create_sample_workflow():
         else:
             return "architect"
     
-    # グラフの構築
+    # Build graph
     workflow = StateGraph(AgentState)
     workflow.add_node("architect", architect_node)
     workflow.add_node("executor", executor_node)
@@ -57,7 +57,7 @@ def create_sample_workflow():
 
 
 def generate_graph_images():
-    """グラフ画像を生成"""
+    """Generate graph images"""
     output_dir = Path(__file__).parent.parent / "docs" / "images"
     output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -65,17 +65,17 @@ def generate_graph_images():
     app = create_sample_workflow()
     
     try:
-        # Mermaid形式で出力
+        # Output in Mermaid format
         graph = app.get_graph()
         
-        # Mermaidコードを取得
+        # Get Mermaid code
         mermaid_code = graph.draw_mermaid()
         mermaid_file = output_dir / "task_agent_workflow.mmd"
         with open(mermaid_file, "w", encoding="utf-8") as f:
             f.write(mermaid_code)
         print(f"✓ Mermaid file saved: {mermaid_file}")
         
-        # PNG画像として出力（可能な場合）
+        # Output as PNG image (if possible)
         try:
             png_data = graph.draw_mermaid_png()
             if png_data:
@@ -87,7 +87,7 @@ def generate_graph_images():
             print(f"⚠ PNG generation not available: {e}")
             print("  You can convert the Mermaid file using online tools or mermaid-cli")
         
-        # ASCII形式でも出力
+        # Also output in ASCII format
         try:
             ascii_diagram = graph.draw_ascii()
             ascii_file = output_dir / "task_agent_workflow.txt"
