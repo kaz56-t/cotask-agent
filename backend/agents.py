@@ -67,7 +67,7 @@ def create_llm(
         raise RuntimeError(f"Failed to connect to {model_provider} API. Please check your API key and network connection.")
     
     try:
-        # 速度優先のため温度を下げる（0.3: より決定論的で速い）
+        # Lower temperature for speed priority (0.3: more deterministic and faster)
         if model_provider == ModelProvider.OPENAI:
             llm = ChatOpenAI(
                 model=model_name,
@@ -209,26 +209,26 @@ Be brief. If successful, just say "Task completed successfully." and end."""
             
             log_callback("executor", response.content)
             
-            # Determine next step - より緩い完了判定
+            # Determine next step - more lenient completion check
             content_lower = response.content.lower()
             iteration_count = state.get("iteration_count", 0) + 1
             max_iterations = state.get('max_iterations', 10)
             logger.info(f"[Executor] Iteration {iteration_count}/{max_iterations}")
             
-            # 完了判定を緩和（より多くのキーワードで完了と判断）
+            # Relax completion check (judge as complete with more keywords)
             completion_keywords = [
                 "complete", "finished", "done", "successfully", "completed",
                 "task completed", "success", "output", "saved", "created",
                 "finished successfully", "done successfully"
             ]
             
-            # コードが実行されていて、エラーがない場合は完了と判断
+            # If code was executed and there are no errors, judge as complete
             recent_messages = [str(msg.content).lower() for msg in messages[-5:]]
             has_code_execution = any("execution result" in msg or "code execution" in msg for msg in recent_messages)
             has_success = any("success: true" in msg or "success:true" in msg or "success:  true" in msg for msg in recent_messages)
             has_no_error = not any("error:" in msg and "success: false" in msg for msg in recent_messages)
             
-            # 完了条件: キーワードがある、またはコード実行成功、または最大イテレーション到達
+            # Completion condition: keywords exist, or code execution succeeded, or max iterations reached
             is_complete = (
                 any(keyword in content_lower for keyword in completion_keywords) or 
                 (has_code_execution and has_success and has_no_error) or
@@ -295,7 +295,7 @@ def create_workflow(
     logger.info(f"Creating workflow for task: {task_id} ({task_name})")
     logger.info(f"Model: {model_provider.value}/{model_name}")
     
-    # Langfuseコールバックハンドラーを取得
+    # Get Langfuse callback handler
     langfuse_handler = get_langfuse_handler(
         task_id=task_id,
         session_id=session_id
@@ -343,13 +343,13 @@ def create_workflow(
     logger.info("Compiling workflow graph")
     compile_kwargs = {}
     if langfuse_handler:
-        compile_kwargs["checkpointer"] = None  # Checkpointerは必要に応じて追加
+        compile_kwargs["checkpointer"] = None  # Add checkpointer if needed
         logger.info("Langfuse callbacks will be used during workflow execution")
     
     app = workflow.compile(**compile_kwargs)
     logger.success("Workflow graph compiled successfully")
     
-    # Initial state - max_iterationsを3に削減（速度優先）
+    # Initial state - reduce max_iterations to 3 (speed priority)
     initial_state = {
         "messages": [
             HumanMessage(content=f"Task: {task_name}\n\nDescription: {task_description}\n\nComplete this task quickly. Save outputs to {runtime_output_path}/")

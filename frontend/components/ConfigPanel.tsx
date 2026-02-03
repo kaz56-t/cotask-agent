@@ -33,7 +33,7 @@ export default function ConfigPanel({ onConfigUpdated }: ConfigPanelProps) {
 
   useEffect(() => {
     fetchData();
-    // 統計情報を定期的に更新（5秒ごと）
+    // Update statistics periodically (every 5 seconds)
     const interval = setInterval(() => {
       api.getStats().then(setStats).catch(console.error);
     }, 5000);
@@ -71,7 +71,7 @@ export default function ConfigPanel({ onConfigUpdated }: ConfigPanelProps) {
         <h2 className="text-lg font-semibold">Configuration</h2>
       </div>
 
-      {/* 並列実行数設定 */}
+      {/* Max concurrent tasks setting */}
       <div>
         <label
           htmlFor="maxConcurrent"
@@ -118,7 +118,7 @@ export default function ConfigPanel({ onConfigUpdated }: ConfigPanelProps) {
         </div>
       )}
 
-      {/* 統計情報 */}
+      {/* Statistics */}
       <div className="border-t border-gray-200 dark:border-gray-800 pt-4">
         <h3 className="text-sm font-medium mb-3">System Statistics</h3>
         <div className="grid grid-cols-2 gap-3 text-sm">

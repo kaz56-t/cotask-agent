@@ -50,7 +50,7 @@ export default function TaskDetail({ taskId, onTaskDeleted }: TaskDetailProps) {
     if (taskId) {
       setLoading(true);
       fetchTask();
-      // 実行中のタスクはログをポーリング（2秒ごと）
+      // Poll logs for running tasks (every 2 seconds)
       const interval = setInterval(() => {
         if (task?.status === "running") {
           fetchTask();
@@ -65,7 +65,7 @@ export default function TaskDetail({ taskId, onTaskDeleted }: TaskDetailProps) {
   }, [taskId]);
 
   useEffect(() => {
-    // ログが更新されたら自動スクロール
+    // Auto-scroll when logs are updated
     if (activeTab === "logs" && logsEndRef.current) {
       logsEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
@@ -124,7 +124,7 @@ export default function TaskDetail({ taskId, onTaskDeleted }: TaskDetailProps) {
 
   return (
     <div className="h-full flex flex-col">
-      {/* ヘッダー */}
+      {/* Header */}
       <div className="p-4 border-b border-gray-200 dark:border-gray-800">
         <div className="flex items-start justify-between mb-2">
           <div className="flex-1">
@@ -176,7 +176,7 @@ export default function TaskDetail({ taskId, onTaskDeleted }: TaskDetailProps) {
         )}
       </div>
 
-      {/* タブ */}
+      {/* Tabs */}
       <div className="flex border-b border-gray-200 dark:border-gray-800">
         <button
           onClick={() => setActiveTab("logs")}
@@ -200,7 +200,7 @@ export default function TaskDetail({ taskId, onTaskDeleted }: TaskDetailProps) {
         </button>
       </div>
 
-      {/* コンテンツ */}
+      {/* Content */}
       <div className="flex-1 overflow-y-auto">
         {activeTab === "logs" ? (
           <div className="p-4 space-y-2">
