@@ -105,6 +105,14 @@ class TaskCreate(BaseModel):
     model_name: str
 
 
+class TestExecuteRequest(BaseModel):
+    """Request model for test execution endpoint (Phase 0)"""
+    name: str
+    description: str
+    model_provider: str  # "openai" or "anthropic"
+    model_name: str
+
+
 class TaskResponse(BaseModel):
     id: str
     name: str
@@ -665,15 +673,22 @@ async def run_task_background(task_id: str):
         
         logger.info(f"Task found: {task.name} (status: {task.status})")
         
-        # Extract requirements from chat history
-        messages = db.query(ChatMessage).filter(
-            ChatMessage.session_id == task.session_id
-        ).order_by(ChatMessage.timestamp).all()
-        
-        # Create requirements summary (from chat history)
-        requirements_summary = "\n".join([
-            f"{msg.role}: {msg.content}" for msg in messages[-5:]  # Last 5 messages
-        ])
+        # Extract requirements from chat history (if session exists)
+        requirements_summary = ""
+        if task.session_id:
+            messages = db.query(ChatMessage).filter(
+                ChatMessage.session_id == task.session_id
+            ).order_by(ChatMessage.timestamp).all()
+            
+            # Create requirements summary (from chat history)
+            if messages:
+                requirements_summary = "\n".join([
+                    f"{msg.role}: {msg.content}" for msg in messages[-5:]  # Last 5 messages
+                ])
+        else:
+            # Phase 0: Test execution mode - skip requirements definition
+            logger.info("No session_id found - running in test execution mode (requirements skipped)")
+            requirements_summary = ""
         
         # Artifact output path (host side)
         artifacts_dir = Path("/app/data/artifacts")
@@ -737,12 +752,18 @@ async def run_task_background(task_id: str):
         
         # Create agent workflow
         logger.info("Creating agent workflow")
+        # Phase 0: If no requirements summary, use task description only
+        if requirements_summary:
+            task_description_with_requirements = task.description + "\n\nRequirements:\n" + requirements_summary
+        else:
+            task_description_with_requirements = task.description
+        
         workflow, initial_state = create_workflow(
             model_provider=model_provider,
             model_name=task.model_name,
             task_id=task_id,
             task_name=task.name,
-            task_description=task.description + "\n\nRequirements:\n" + requirements_summary,
+            task_description=task_description_with_requirements,
             runtime_output_path=runtime_output_path,
             execute_code_func=execute_code_func,
             log_callback=log_callback,
@@ -909,6 +930,55 @@ async def execute_task(
         "task_id": task_id,
         "status": "running"
     }
+
+
+@app.post("/api/tasks/test-execute", response_model=TaskResponse)
+async def test_execute_task(
+    request: TestExecuteRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Phase 0: Test execution endpoint - Skip requirements definition and execute task directly.
+    Useful for development and debugging.
+    """
+    # Generate task ID
+    task_id = str(uuid.uuid4())
+    
+    # Create task without session_id (test execution mode)
+    task = Task(
+        id=task_id,
+        name=request.name,
+        description=request.description,
+        model_provider=request.model_provider,
+        model_name=request.model_name,
+        status=TaskStatus.RUNNING.value,  # Start immediately
+        session_id=None  # No chat session for test execution
+    )
+    db.add(task)
+    task.started_at = datetime.utcnow()
+    db.commit()
+    db.refresh(task)
+    
+    logger.info(f"Test execution task created: {task_id} ({request.name})")
+    
+    # Execute task in background
+    asyncio.create_task(run_task_background(task_id))
+    
+    return TaskResponse(
+        id=task.id,
+        name=task.name,
+        description=task.description,
+        model_provider=task.model_provider,
+        model_name=task.model_name,
+        status=task.status,
+        created_at=task.created_at.isoformat(),
+        updated_at=task.updated_at.isoformat(),
+        started_at=task.started_at.isoformat() if task.started_at else None,
+        completed_at=task.completed_at.isoformat() if task.completed_at else None,
+        error_message=task.error_message,
+        artifact_path=task.artifact_path,
+        session_id=task.session_id
+    )
 
 
 # Phase 4: Task logs and artifacts API
