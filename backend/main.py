@@ -107,10 +107,10 @@ class TaskCreate(BaseModel):
 
 class TestExecuteRequest(BaseModel):
     """Request model for test execution endpoint (Phase 0)"""
-    name: str
-    description: str
-    model_provider: str  # "openai" or "anthropic"
-    model_name: str
+    name: str = "Test Task: Generate CSV"
+    description: str = "Generate a CSV file with sample data containing 10 rows with columns: id, name, email, age"
+    model_provider: str = "openai"  # "openai" or "anthropic"
+    model_name: str = "gpt-5-nano"
 
 
 class TaskResponse(BaseModel):
