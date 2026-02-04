@@ -48,16 +48,35 @@
 
 ### Phase 2: 専用Agentの実装
 
-- [ ] **TextAgent**: テキスト生成・編集タスク用
-  - コード生成不要なシンプルなテキスト処理
-  - メール作成、レポート生成、要約など
-  - LangGraphのシンプルな1ノードワークフロー
+- [x] **TextAgent**: テキスト生成・編集タスク用 ✅
+  - コード生成不要なシンプルなテキスト処理 ✅
+  - メール作成、レポート生成、要約など ✅
+  - LangGraphのシンプルな1ノードワークフロー ✅
   
-- [ ] **SearchAgent**: Web検索タスク用
-  - Tavily APIやSerper APIなどの検索ツール統合
-  - 検索結果の要約・整理
-  - LangGraphの2ノードワークフロー（検索→要約）
+- [x] **SearchAgent**: Web検索タスク用 ✅
+  - DuckDuckGo検索ツール統合 ✅
+  - 検索結果の要約・整理 ✅
+  - LangGraphの2ノードワークフロー（検索→要約） ✅
 
+### Phase 3: Agentルーターの実装
+
+- [x] `agent_router.py`を作成 ✅
+  - タスクタイプに応じて適切なワークフローを返す関数 ✅
+  - `route_task(task_type: str, task_description: str) -> Workflow` ✅
+- [x] `create_workflow()`をリファクタリング ✅
+  - ルーター経由でワークフローを生成 ✅
+  - 既存のCodeAgentワークフローは`create_code_workflow()`として分離 ✅
+- [x] `run_task_background()`でルーターを使用 ✅
+
+### Phase 4: 既存機能の改善
+
+- [ ] 簡単なタスクはExecutorではなくChat Agentで実行する（既存TODO）
+- [ ] `max_iterations`を動的に設定（既存TODO）
+  - タスクタイプと複雑度に応じて調整
+  - シンプルなタスクは1回、複雑なタスクは3-5回
+
+
+### Phase 5: 複雑度の高いAgentの実装
 - [ ] **ScrapingAgent**: Webスクレイピングタスク用
   - Playwright/BeautifulSoup統合
   - 動的コンテンツの取得
@@ -68,22 +87,6 @@
   - ドキュメントのインデックス化
   - LangGraphの2ノードワークフロー（検索→生成）
 
-### Phase 3: Agentルーターの実装
-
-- [ ] `agent_router.py`を作成
-  - タスクタイプに応じて適切なワークフローを返す関数
-  - `route_task(task_type: str, task_description: str) -> Workflow`
-- [ ] `create_workflow()`をリファクタリング
-  - ルーター経由でワークフローを生成
-  - 既存のCodeAgentワークフローは`create_code_workflow()`として分離
-- [ ] `run_task_background()`でルーターを使用
-
-### Phase 4: 既存機能の改善
-
-- [ ] 簡単なタスクはExecutorではなくChat Agentで実行する（既存TODO）
-- [ ] `max_iterations`を動的に設定（既存TODO）
-  - タスクタイプと複雑度に応じて調整
-  - シンプルなタスクは1回、複雑なタスクは3-5回
 
 ### 実装の優先順位
 

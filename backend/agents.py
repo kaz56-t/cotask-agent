@@ -281,7 +281,7 @@ def should_continue(state: AgentState) -> Literal["architect", "__end__"]:
         return "architect"
 
 
-def create_workflow(
+def create_code_workflow(
     model_provider: ModelProvider,
     model_name: str,
     task_id: str,
@@ -293,8 +293,8 @@ def create_workflow(
     session_id: Optional[str] = None,
     task_type: Optional[str] = None
 ):
-    """Create LangGraph workflow for task processing."""
-    logger.info(f"Creating workflow for task: {task_id} ({task_name})")
+    """Create LangGraph workflow for code generation tasks (Architect+Executor)."""
+    logger.info(f"Creating CodeAgent workflow for task: {task_id} ({task_name})")
     logger.info(f"Model: {model_provider.value}/{model_name}")
     if task_type:
         logger.info(f"Task type: {task_type}")
@@ -368,5 +368,12 @@ def create_workflow(
         "task_type": task_type or "code_generation"  # Default to code_generation if not specified
     }
     
-    logger.info("Workflow creation completed")
+    logger.info("CodeAgent workflow creation completed")
     return app, initial_state
+
+
+# Alias for backward compatibility (deprecated, use create_code_workflow or agent_router.route_task)
+def create_workflow(*args, **kwargs):
+    """Deprecated: Use create_code_workflow or agent_router.route_task instead."""
+    logger.warning("create_workflow is deprecated. Use create_code_workflow or agent_router.route_task instead.")
+    return create_code_workflow(*args, **kwargs)

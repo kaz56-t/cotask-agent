@@ -36,7 +36,7 @@ from database import init_db, get_db, ChatSession, ChatMessage, Task, TaskStatus
 from chat_agent import create_chat_agent, format_messages_for_langgraph
 from langchain_core.messages import HumanMessage
 from langchain_core.callbacks import CallbackManager
-from agents import create_workflow
+from agent_router import route_task
 from executor import RuntimeExecutor
 from langfuse_config import get_langfuse_handler
 from complexity_analyzer import classify_task_type
@@ -775,15 +775,16 @@ async def run_task_background(task_id: str):
                 logger.error(f"Error classifying task type: {e}", exc_info=True)
                 task_type = "code_generation"  # Default fallback
         
-        # Create agent workflow
-        logger.info("Creating agent workflow")
+        # Create agent workflow using router (Phase 2)
+        logger.info("Creating agent workflow using router")
         # Phase 0: If no requirements summary, use task description only
         if requirements_summary:
             task_description_with_requirements = task.description + "\n\nRequirements:\n" + requirements_summary
         else:
             task_description_with_requirements = task.description
         
-        workflow, initial_state = create_workflow(
+        workflow, initial_state = route_task(
+            task_type=task_type or "code_generation",
             model_provider=model_provider,
             model_name=task.model_name,
             task_id=task_id,
@@ -792,8 +793,7 @@ async def run_task_background(task_id: str):
             runtime_output_path=runtime_output_path,
             execute_code_func=execute_code_func,
             log_callback=log_callback,
-            session_id=task.session_id,
-            task_type=task_type
+            session_id=task.session_id
         )
         
         logger.info("Workflow created, starting execution")

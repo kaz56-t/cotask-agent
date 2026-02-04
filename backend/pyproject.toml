@@ -18,4 +18,5 @@ dependencies = [
     "loguru>=0.7.0",
     "grandalf>=0.8",
     "langfuse>=2.0.0",
+    "duckduckgo-search>=6.0.0",
 ]
