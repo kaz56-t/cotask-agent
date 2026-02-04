@@ -1,20 +1,18 @@
 """
 Agent Router: Routes tasks to appropriate agents based on task type.
 """
-from typing import Optional, Tuple
-from langgraph.graph.graph import CompiledGraph
+from typing import Optional, Tuple, Any
 from database import ModelProvider
-from agents import AgentState
 from loguru import logger
 
 # Import agent workflows
-from text_agent import create_text_workflow
-from search_agent import create_search_workflow
+from agent.text_agent import create_text_workflow
+from agent.search_agent import create_search_workflow
 
 # Import CodeAgent workflow (avoid circular import by importing function directly)
 def _get_code_workflow():
     """Lazy import to avoid circular dependencies."""
-    from agents import create_code_workflow
+    from agent.code_agent import create_code_workflow
     return create_code_workflow
 
 
@@ -29,7 +27,7 @@ def route_task(
     execute_code_func,
     log_callback,
     session_id: Optional[str] = None
-) -> Tuple[CompiledGraph, dict]:
+) -> Tuple[Any, dict]:
     """
     Route task to appropriate agent based on task type.
     

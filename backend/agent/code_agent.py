@@ -1,97 +1,16 @@
-"""LangGraph-based agent definitions for task processing."""
-from typing import TypedDict, Annotated, Literal, Optional, List
+"""
+CodeAgent: Code generation tasks using Architect+Executor pattern.
+Handles tasks that require code generation and execution.
+Uses a 2-node LangGraph workflow: architect -> executor.
+"""
+from typing import Literal, Optional
 from langgraph.graph import StateGraph, END
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_core.callbacks import BaseCallbackHandler
 from database import ModelProvider
+from agent.base import AgentState, create_llm
 from loguru import logger
 from langfuse_config import get_langfuse_handler
-import os
-
-
-class AgentState(TypedDict):
-    """State for the LangGraph workflow."""
-    messages: Annotated[list, lambda x, y: x + y]
-    task_id: str
-    task_name: str
-    task_description: str
-    runtime_output_path: str
-    current_agent: str
-    iteration_count: int
-    max_iterations: int
-    task_type: Optional[str]  # Task type: code_generation, web_search, text_generation, scraping, rag, simple_text
-
-
-def check_api_connection(model_provider: ModelProvider, model_name: str) -> bool:
-    """Check API connection and credentials."""
-    try:
-        if model_provider == ModelProvider.OPENAI:
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                logger.error("OPENAI_API_KEY not found in environment variables")
-                return False
-            if len(api_key.strip()) == 0:
-                logger.error("OPENAI_API_KEY is empty")
-                return False
-            logger.info(f"OpenAI API key found (length: {len(api_key)}), model: {model_name}")
-            return True
-        elif model_provider == ModelProvider.ANTHROPIC:
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
-                logger.error("ANTHROPIC_API_KEY not found in environment variables")
-                return False
-            if len(api_key.strip()) == 0:
-                logger.error("ANTHROPIC_API_KEY is empty")
-                return False
-            logger.info(f"Anthropic API key found (length: {len(api_key)}), model: {model_name}")
-            return True
-        else:
-            logger.error(f"Unsupported model provider: {model_provider}")
-            return False
-    except Exception as e:
-        logger.error(f"API connection check failed: {e}")
-        return False
-
-
-def create_llm(
-    model_provider: ModelProvider,
-    model_name: str,
-    callbacks: Optional[List[BaseCallbackHandler]] = None
-):
-    """Create LLM instance based on provider."""
-    logger.info(f"Creating LLM: provider={model_provider}, model={model_name}")
-    
-    # Check API connection first
-    if not check_api_connection(model_provider, model_name):
-        raise RuntimeError(f"Failed to connect to {model_provider} API. Please check your API key and network connection.")
-    
-    try:
-        # Lower temperature for speed priority (0.3: more deterministic and faster)
-        if model_provider == ModelProvider.OPENAI:
-            llm = ChatOpenAI(
-                model=model_name,
-                temperature=0.3,
-                max_tokens=2000,
-                callbacks=callbacks
-            )
-            logger.success(f"OpenAI LLM created successfully: {model_name} (temperature=0.3)")
-            return llm
-        elif model_provider == ModelProvider.ANTHROPIC:
-            llm = ChatAnthropic(
-                model=model_name,
-                temperature=0.3,
-                max_tokens=2000,
-                callbacks=callbacks
-            )
-            logger.success(f"Anthropic LLM created successfully: {model_name} (temperature=0.3)")
-            return llm
-        else:
-            raise ValueError(f"Unsupported model provider: {model_provider}")
-    except Exception as e:
-        logger.error(f"Failed to create LLM: {e}")
-        raise
+from prompts.code_agent import get_architect_prompt, EXECUTOR_PROMPT
 
 
 def create_architect_node(
@@ -107,22 +26,11 @@ def create_architect_node(
         log_callback("architect", "Architect is analyzing the task and designing a solution...")
         
         try:
-            system_prompt = f"""You are an Architect agent. Your goal is to complete tasks quickly and simply.
-
-IMPORTANT: Prioritize speed and simplicity over perfection. Write minimal, working code.
-
-Task: {state['task_name']}
-Description: {state['task_description']}
-Output path: {runtime_output_path}/
-
-Instructions:
-1. Write simple Python code that accomplishes the task
-2. Save outputs to {runtime_output_path}/
-3. Wrap code in ```python code blocks
-4. Keep code concise - no unnecessary complexity
-5. If the task is simple, use straightforward solutions
-
-Write the code now. Be brief."""
+            system_prompt = get_architect_prompt(
+                task_name=state['task_name'],
+                task_description=state['task_description'],
+                runtime_output_path=runtime_output_path
+            )
         
             messages = state['messages'].copy()
             if not any(isinstance(msg, SystemMessage) for msg in messages):
@@ -165,16 +73,7 @@ def create_executor_node(
         log_callback("executor", "Executor is reviewing the code and execution results...")
         
         try:
-            system_prompt = """You are an Executor agent. Your goal is to quickly determine if the task is complete.
-
-IMPORTANT: If code executed successfully and outputs were created, mark the task as COMPLETE immediately.
-
-Rules:
-1. If code executed successfully → Task is COMPLETE. Say "Task completed successfully."
-2. If there are minor errors but outputs exist → Task is COMPLETE. Say "Task completed successfully."
-3. Only if code completely failed with no outputs → Ask architect to fix it.
-
-Be brief. If successful, just say "Task completed successfully." and end."""
+            system_prompt = EXECUTOR_PROMPT
         
             messages = state['messages'].copy()
             if not any(isinstance(msg, SystemMessage) for msg in messages):
@@ -370,10 +269,3 @@ def create_code_workflow(
     
     logger.info("CodeAgent workflow creation completed")
     return app, initial_state
-
-
-# Alias for backward compatibility (deprecated, use create_code_workflow or agent_router.route_task)
-def create_workflow(*args, **kwargs):
-    """Deprecated: Use create_code_workflow or agent_router.route_task instead."""
-    logger.warning("create_workflow is deprecated. Use create_code_workflow or agent_router.route_task instead.")
-    return create_code_workflow(*args, **kwargs)

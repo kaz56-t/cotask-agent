@@ -6,11 +6,11 @@ Uses a simple 1-node LangGraph workflow.
 from typing import Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_core.callbacks import BaseCallbackHandler
 from database import ModelProvider
-from agents import AgentState, create_llm
+from agent.base import AgentState, create_llm
 from loguru import logger
 from langfuse_config import get_langfuse_handler
+from prompts.text_agent import get_text_agent_prompt
 from pathlib import Path
 import json
 
@@ -28,21 +28,11 @@ def create_text_agent_node(
         log_callback("text_agent", "TextAgent is generating/editing text content...")
         
         try:
-            system_prompt = f"""You are a TextAgent specialized in generating and editing text content.
-
-Your task:
-- Task Name: {state['task_name']}
-- Description: {state['task_description']}
-- Output Path: {runtime_output_path}/
-
-Instructions:
-1. Generate or edit the requested text content based on the task description
-2. Save the output to a file in {runtime_output_path}/
-3. Use appropriate file extensions (.txt, .md, .json, etc.)
-4. Be concise and focused on the task requirements
-5. If the task asks for structured data, use JSON format
-
-Generate the text content now. Be direct and complete."""
+            system_prompt = get_text_agent_prompt(
+                task_name=state['task_name'],
+                task_description=state['task_description'],
+                runtime_output_path=runtime_output_path
+            )
 
             messages = state['messages'].copy()
             if not any(isinstance(msg, SystemMessage) for msg in messages):
@@ -82,12 +72,12 @@ Generate the text content now. Be direct and complete."""
                         file_path = Path(runtime_output_path) / f"{task_name_safe}.json"
                         file_path.write_text(file_content, encoding='utf-8')
                     except json.JSONDecodeError:
-                        # Not valid JSON, save as text
-                        file_path = Path(runtime_output_path) / f"{task_name_safe}.txt"
+                        # Not valid JSON, save as markdown
+                        file_path = Path(runtime_output_path) / f"{task_name_safe}.md"
                         file_path.write_text(file_content, encoding='utf-8')
                 else:
-                    # Save as text file
-                    file_path = Path(runtime_output_path) / f"{task_name_safe}.txt"
+                    # Save as markdown file (text content as artifact)
+                    file_path = Path(runtime_output_path) / f"{task_name_safe}.md"
                     file_path.write_text(file_content, encoding='utf-8')
                 
                 logger.success(f"[TextAgent] Saved output to {file_path}")

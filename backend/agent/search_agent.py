@@ -6,13 +6,12 @@ Uses a 2-node LangGraph workflow: search -> summarize.
 from typing import Optional, List
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_core.callbacks import BaseCallbackHandler
 from database import ModelProvider
-from agents import AgentState, create_llm
+from agent.base import AgentState, create_llm
 from loguru import logger
 from langfuse_config import get_langfuse_handler
+from prompts.search_agent import get_summarizer_prompt
 from pathlib import Path
-import json
 
 from duckduckgo_search import DDGS
 
@@ -126,20 +125,11 @@ def create_summarizer_node(
         log_callback("summarizer", "SearchAgent is summarizing search results...")
         
         try:
-            system_prompt = f"""You are a SearchAgent summarizer. Your task is to summarize web search results and provide a comprehensive answer.
-
-Task: {state['task_name']}
-Original Query: {state['task_description']}
-Output Path: {runtime_output_path}/
-
-Instructions:
-1. Review the search results provided
-2. Summarize the key information
-3. Provide a comprehensive answer to the original query
-4. Cite sources when relevant
-5. Save the summary to a file in {runtime_output_path}/
-
-Generate a clear, well-structured summary now."""
+            system_prompt = get_summarizer_prompt(
+                task_name=state['task_name'],
+                task_description=state['task_description'],
+                runtime_output_path=runtime_output_path
+            )
 
             messages = state['messages'].copy()
             if not any(isinstance(msg, SystemMessage) for msg in messages):
@@ -152,12 +142,12 @@ Generate a clear, well-structured summary now."""
             
             log_callback("summarizer", response.content)
             
-            # Save summary to file
+            # Save summary to file as markdown (text content as artifact)
             try:
                 task_name_safe = "".join(c for c in state['task_name'] if c.isalnum() or c in (' ', '-', '_')).strip()
                 task_name_safe = task_name_safe.replace(' ', '_')[:50]
                 
-                file_path = Path(runtime_output_path) / f"{task_name_safe}_search_summary.txt"
+                file_path = Path(runtime_output_path) / f"{task_name_safe}_search_summary.md"
                 file_path.write_text(response.content, encoding='utf-8')
                 
                 logger.success(f"[SearchAgent] Saved summary to {file_path}")

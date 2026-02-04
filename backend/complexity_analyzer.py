@@ -6,7 +6,13 @@ from typing import Literal, Optional
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.callbacks import BaseCallbackHandler
 from database import ModelProvider
-from agents import create_llm
+from agent.base import create_llm
+from prompts.complexity_analyzer import (
+    TASK_CLASSIFICATION_PROMPT,
+    get_task_classification_user_prompt,
+    COMPLEXITY_ANALYSIS_PROMPT,
+    get_complexity_analysis_user_prompt
+)
 from loguru import logger
 import json
 import re
@@ -44,33 +50,8 @@ def classify_task_type(
     """
     logger.info(f"Classifying task type for: {task_name}")
     
-    system_prompt = """You are a task classification system. Analyze the given task and classify it into one of the following types:
-
-1. **code_generation**: Tasks that require writing and executing Python code to generate files, process data, or perform computations.
-   Examples: "Generate a CSV file with sample data", "Create a Python script to analyze data", "Process images and save results"
-
-2. **web_search**: Tasks that require searching the web for information.
-   Examples: "Search for the latest news about AI", "Find information about Python best practices", "Look up current stock prices"
-
-3. **text_generation**: Tasks that involve generating or editing text content (emails, reports, summaries, documents).
-   Examples: "Write a thank you email", "Create a summary of a meeting", "Draft a formal letter", "Write a blog post"
-
-4. **scraping**: Tasks that involve extracting data from websites.
-   Examples: "Scrape product information from a website", "Extract article content from URLs", "Get data from a web page"
-
-5. **rag**: Tasks that involve searching through documents or knowledge bases and answering questions.
-   Examples: "Answer questions about a document", "Search through uploaded files", "Find information in a knowledge base"
-
-6. **simple_text**: Very simple text processing tasks that don't require complex operations.
-   Examples: "Capitalize text", "Count words", "Simple text formatting"
-
-Respond with ONLY the task type name (e.g., "code_generation") without any additional explanation or formatting."""
-
-    user_prompt = f"""Task Name: {task_name}
-
-Task Description: {task_description}
-
-Classify this task into one of the types: code_generation, web_search, text_generation, scraping, rag, or simple_text."""
+    system_prompt = TASK_CLASSIFICATION_PROMPT
+    user_prompt = get_task_classification_user_prompt(task_name, task_description)
 
     try:
         llm = create_llm(model_provider, model_name, callbacks=callbacks)
@@ -132,25 +113,8 @@ def analyze_task_complexity(
     """
     logger.info(f"Analyzing task complexity for: {task_name}")
     
-    system_prompt = """You are a task complexity analyzer. Analyze the given task and determine its complexity level.
-
-Respond with a JSON object containing:
-- "complexity": "simple", "medium", or "complex"
-- "estimated_iterations": A number between 1 and 5 indicating how many iterations might be needed
-- "reasoning": A brief explanation of why this complexity level was assigned
-
-Example response:
-{
-  "complexity": "simple",
-  "estimated_iterations": 1,
-  "reasoning": "This is a straightforward text generation task that can be completed in a single iteration."
-}"""
-
-    user_prompt = f"""Task Name: {task_name}
-
-Task Description: {task_description}
-
-Analyze the complexity of this task."""
+    system_prompt = COMPLEXITY_ANALYSIS_PROMPT
+    user_prompt = get_complexity_analysis_user_prompt(task_name, task_description)
 
     try:
         llm = create_llm(model_provider, model_name, callbacks=callbacks)

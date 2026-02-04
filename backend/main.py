@@ -2,8 +2,8 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
-from pydantic import BaseModel
 from typing import Optional, List
+from contextlib import asynccontextmanager
 import uuid
 import os
 from datetime import datetime
@@ -33,29 +33,25 @@ logger.add(
 )
 
 from database import init_db, get_db, ChatSession, ChatMessage, Task, TaskStatus, ModelProvider, TaskLog
-from chat_agent import create_chat_agent, format_messages_for_langgraph
-from langchain_core.messages import HumanMessage
-from langchain_core.callbacks import CallbackManager
-from agent_router import route_task
-from executor import RuntimeExecutor
-from langfuse_config import get_langfuse_handler
-from complexity_analyzer import classify_task_type
-
-app = FastAPI(title="CoTask Agent API", version="0.1.0")
-
-# CORS configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://frontend:3000"],  # Next.js default port and Docker internal communication
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+from agent.chat_agent import create_chat_agent
+from services.chat_service import process_chat_message, create_or_get_session, invoke_chat_agent_with_langfuse
+from services.task_service import run_task_background
+from models import (
+    ChatMessageRequest,
+    ChatMessageResponse,
+    ChatSessionResponse,
+    TaskCreate,
+    TestExecuteRequest,
+    TaskResponse,
+    TaskListResponse,
+    TaskLogResponse,
+    ArtifactResponse,
+    ArtifactsResponse
 )
 
-
-# Initialize database on application startup
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     init_db()
     # Initialize chat agent globally (if needed)
     try:
@@ -73,91 +69,25 @@ async def startup_event():
         import traceback
         traceback.print_exc()
         app.state.chat_agent = None
+    
+    yield
+    
+    # Shutdown (if needed)
+    # Add any cleanup code here if necessary
 
 
-# Pydanticモデル
-class ChatMessageRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = None
+app = FastAPI(title="CoTask Agent API", version="0.1.0", lifespan=lifespan)
+
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://frontend:3000"],  # Next.js default port and Docker internal communication
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-class ChatMessageResponse(BaseModel):
-    id: int
-    session_id: str
-    role: str
-    content: str
-    timestamp: str
-    requirements_defined: Optional[bool] = False  # Whether requirements are defined
-    requirements_summary: Optional[str] = None  # Requirements summary
-
-
-class ChatSessionResponse(BaseModel):
-    id: str
-    created_at: str
-    updated_at: str
-    messages: List[ChatMessageResponse]
-
-
-# Phase 3: Task management Pydantic models
-class TaskCreate(BaseModel):
-    name: str
-    description: str
-    model_provider: str  # "openai" or "anthropic"
-    model_name: str
-
-
-class TestExecuteRequest(BaseModel):
-    """Request model for test execution endpoint (Phase 0)"""
-    name: str = "Test Task: Generate CSV"
-    description: str = "Generate a CSV file with sample data containing 10 rows with columns: id, name, email, age"
-    model_provider: str = "openai"  # "openai" or "anthropic"
-    model_name: str = "gpt-5-nano"
-
-
-class TaskResponse(BaseModel):
-    id: str
-    name: str
-    description: str
-    model_provider: str
-    model_name: str
-    status: str
-    created_at: str
-    updated_at: str
-    started_at: Optional[str]
-    completed_at: Optional[str]
-    error_message: Optional[str]
-    artifact_path: Optional[str]
-    session_id: Optional[str]
-    task_type: Optional[str] = None  # Task type: code_generation, web_search, text_generation, scraping, rag, simple_text
-
-    class Config:
-        from_attributes = True
-
-
-class TaskListResponse(BaseModel):
-    tasks: List[TaskResponse]
-    total: int
-
-
-class TaskLogResponse(BaseModel):
-    id: int
-    task_id: str
-    timestamp: str
-    role: str
-    content: str
-
-    class Config:
-        from_attributes = True
-
-
-class ArtifactResponse(BaseModel):
-    name: str
-    path: str
-    size: int
-
-
-class ArtifactsResponse(BaseModel):
-    artifacts: List[ArtifactResponse]
 
 
 @app.get("/")
@@ -170,22 +100,6 @@ async def health():
     return {"status": "healthy"}
 
 
-def invoke_chat_agent_with_langfuse(chat_agent, initial_state, session_id: str):
-    """Helper function to execute chat agent with Langfuse callback"""
-    langfuse_handler = get_langfuse_handler(
-        session_id=session_id,
-        trace_name="LangGraph Chat"
-    )
-    config = {}
-    if langfuse_handler:
-        callback_manager = CallbackManager([langfuse_handler])
-        config["callbacks"] = callback_manager
-        # Set Langfuse trace name
-        config["metadata"] = {"trace_name": "LangGraph Chat"}
-        config["run_name"] = "LangGraph Chat"
-    return chat_agent.invoke(initial_state, config=config if config else None)
-
-
 @app.post("/api/chat", response_model=ChatMessageResponse)
 async def chat(
     request: ChatMessageRequest,
@@ -195,83 +109,16 @@ async def chat(
     Phase 2: LangGraph conversation flow and DB persistence
     Receives user message, generates AI response, and saves to DB
     """
-    # Create new session if session_id is not specified
-    if not request.session_id:
-        session_id = str(uuid.uuid4())
-        session = ChatSession(id=session_id)
-        db.add(session)
-        db.commit()
-        db.refresh(session)
-    else:
-        session = db.query(ChatSession).filter(ChatSession.id == request.session_id).first()
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        session_id = request.session_id
-    
-    # Save user message to DB
-    user_message = ChatMessage(
-        session_id=session_id,
-        role="user",
-        content=request.message
-    )
-    db.add(user_message)
-    db.commit()
-    
-    # Get existing messages and convert to LangGraph format
-    existing_messages = db.query(ChatMessage).filter(
-        ChatMessage.session_id == session_id
-    ).order_by(ChatMessage.timestamp).all()
-    
-    messages_for_agent = format_messages_for_langgraph([
-        {"role": msg.role, "content": msg.content}
-        for msg in existing_messages
-    ])
-    
-    # Generate AI response with LangGraph
-    requirements_defined = False
-    requirements_summary = None
     try:
-        if app.state.chat_agent:
-            # Execute chat agent (set initial state)
-            initial_state = {
-                "messages": messages_for_agent,
-                "requirements_defined": False,
-                "requirements_summary": ""
-            }
-            result = invoke_chat_agent_with_langfuse(app.state.chat_agent, initial_state, session_id)
-            ai_response_content = result["messages"][-1].content
-            requirements_defined = result.get("requirements_defined", False)
-            requirements_summary = result.get("requirements_summary", None)
-        else:
-            # Fallback: when agent is not initialized
-            ai_response_content = "Sorry, the AI agent is not available. Please check if the OPENAI_API_KEY environment variable is set."
-    except Exception as e:
-        print(f"Error: Failed to generate AI response: {e}")
-        import traceback
-        traceback.print_exc()
-        ai_response_content = f"An error occurred: {str(e)}"
+        session_id = create_or_get_session(request.session_id, db)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Session not found")
     
-    # Save AI response to DB
-    ai_message = ChatMessage(
+    return process_chat_message(
+        chat_agent=app.state.chat_agent,
+        request_message=request.message,
         session_id=session_id,
-        role="assistant",
-        content=ai_response_content
-    )
-    db.add(ai_message)
-    
-    # Update session update time
-    session.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(ai_message)
-    
-    return ChatMessageResponse(
-        id=ai_message.id,
-        session_id=session_id,
-        role=ai_message.role,
-        content=ai_message.content,
-        timestamp=ai_message.timestamp.isoformat(),
-        requirements_defined=requirements_defined,
-        requirements_summary=requirements_summary
+        db=db
     )
 
 
@@ -388,57 +235,14 @@ async def create_task(
     db.refresh(task)
     
     # When creating a task, AI starts requirements definition based on description
-    # Save task description as user message
-    initial_user_message = ChatMessage(
-        session_id=session_id,
-        role="user",
-        content=f"Task name: {task_data.name}\n\n{task_data.description}"
-    )
-    db.add(initial_user_message)
-    db.commit()
-    
-    # AI starts requirements definition (define requirements without assumptions, confirm unclear points)
+    # Use process_chat_message which will save user message and generate AI response
     try:
-        if app.state.chat_agent:
-            # Get existing messages and convert to LangGraph format
-            existing_messages = db.query(ChatMessage).filter(
-                ChatMessage.session_id == session_id
-            ).order_by(ChatMessage.timestamp).all()
-            
-            messages_for_agent = format_messages_for_langgraph([
-                {"role": msg.role, "content": msg.content}
-                for msg in existing_messages
-            ])
-            
-            # Execute chat agent (set initial state)
-            initial_state = {
-                "messages": messages_for_agent,
-                "requirements_defined": False,
-                "requirements_summary": ""
-            }
-            result = invoke_chat_agent_with_langfuse(app.state.chat_agent, initial_state, session_id)
-            ai_response_content = result["messages"][-1].content
-            
-            # Save AI response to DB
-            ai_message = ChatMessage(
-                session_id=session_id,
-                role="assistant",
-                content=ai_response_content
-            )
-            db.add(ai_message)
-            
-            # Update session update time
-            session.updated_at = datetime.utcnow()
-            db.commit()
-        else:
-            # Fallback: when agent is not initialized
-            ai_message = ChatMessage(
-                session_id=session_id,
-                role="assistant",
-                content="Sorry, the AI agent is not available. Please check if the OPENAI_API_KEY environment variable is set."
-            )
-            db.add(ai_message)
-            db.commit()
+        process_chat_message(
+            chat_agent=app.state.chat_agent,
+            request_message=f"Task name: {task_data.name}\n\n{task_data.description}",
+            session_id=session_id,
+            db=db
+        )
     except Exception as e:
         print(f"Error: Failed to generate initial requirements definition: {e}")
         import traceback
@@ -594,315 +398,14 @@ async def send_task_message(
     if not task.session_id:
         raise HTTPException(status_code=404, detail="Task has no associated chat session")
     
-    # Use the same logic as the existing chat endpoint
-    session_id = task.session_id
-    session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    # Save user message to DB
-    user_message = ChatMessage(
-        session_id=session_id,
-        role="user",
-        content=request.message
-    )
-    db.add(user_message)
-    db.commit()
-    
-    # Get existing messages and convert to LangGraph format
-    existing_messages = db.query(ChatMessage).filter(
-        ChatMessage.session_id == session_id
-    ).order_by(ChatMessage.timestamp).all()
-    
-    messages_for_agent = format_messages_for_langgraph([
-        {"role": msg.role, "content": msg.content}
-        for msg in existing_messages
-    ])
-    
-    # Generate AI response with LangGraph
-    requirements_defined = False
-    requirements_summary = None
-    try:
-        if app.state.chat_agent:
-            # Execute chat agent (set initial state)
-            initial_state = {
-                "messages": messages_for_agent,
-                "requirements_defined": False,
-                "requirements_summary": ""
-            }
-            result = invoke_chat_agent_with_langfuse(app.state.chat_agent, initial_state, session_id)
-            ai_response_content = result["messages"][-1].content
-            requirements_defined = result.get("requirements_defined", False)
-            requirements_summary = result.get("requirements_summary", None)
-        else:
-            # Fallback: when agent is not initialized
-            ai_response_content = "Sorry, the AI agent is not available. Please check if the OPENAI_API_KEY environment variable is set."
-    except Exception as e:
-        print(f"Error: Failed to generate AI response: {e}")
-        import traceback
-        traceback.print_exc()
-        ai_response_content = f"An error occurred: {str(e)}"
-    
-    # Save AI response to DB
-    ai_message = ChatMessage(
-        session_id=session_id,
-        role="assistant",
-        content=ai_response_content
-    )
-    db.add(ai_message)
-    
-    # Update session update time
-    session.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(ai_message)
-    
-    return ChatMessageResponse(
-        id=ai_message.id,
-        session_id=session_id,
-        role=ai_message.role,
-        content=ai_message.content,
-        timestamp=ai_message.timestamp.isoformat(),
-        requirements_defined=requirements_defined,
-        requirements_summary=requirements_summary
+    return process_chat_message(
+        chat_agent=app.state.chat_agent,
+        request_message=request.message,
+        session_id=task.session_id,
+        db=db
     )
 
 
-async def run_task_background(task_id: str):
-    """Function to execute task in background"""
-    logger.info(f"Starting background task execution: {task_id}")
-    db = next(get_db())
-    try:
-        task = db.query(Task).filter(Task.id == task_id).first()
-        if not task:
-            logger.error(f"Task {task_id} not found")
-            return
-        
-        logger.info(f"Task found: {task.name} (status: {task.status})")
-        
-        # Extract requirements from chat history (if session exists)
-        requirements_summary = ""
-        if task.session_id:
-            messages = db.query(ChatMessage).filter(
-                ChatMessage.session_id == task.session_id
-            ).order_by(ChatMessage.timestamp).all()
-            
-            # Create requirements summary (from chat history)
-            if messages:
-                requirements_summary = "\n".join([
-                    f"{msg.role}: {msg.content}" for msg in messages[-5:]  # Last 5 messages
-                ])
-        else:
-            # Phase 0: Test execution mode - skip requirements definition
-            logger.info("No session_id found - running in test execution mode (requirements skipped)")
-            requirements_summary = ""
-        
-        # Artifact output path (host side)
-        artifacts_dir = Path("/app/data/artifacts")
-        artifacts_dir.mkdir(parents=True, exist_ok=True)
-        task_artifacts_dir = artifacts_dir / task_id
-        task_artifacts_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Output path in Runtime container
-        runtime_output_path = f"/workspace/outputs/{task_id}"
-        
-        # Initialize RuntimeExecutor (Phase 6: Execute in Runtime container)
-        try:
-            runtime_executor = RuntimeExecutor()
-            logger.info("RuntimeExecutor initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize RuntimeExecutor: {e}")
-            raise
-        
-        # Log callback function
-        def log_callback(role: str, content: str):
-            try:
-                log_entry = TaskLog(
-                    task_id=task_id,
-                    role=role,
-                    content=content
-                )
-                db.add(log_entry)
-                db.commit()
-                logger.info(f"[TaskLog][{role}] {content[:200]}")
-            except Exception as e:
-                logger.error(f"Failed to save task log: {e}")
-                logger.debug(f"Log content: {content[:500]}")
-        
-        # Code execution function (Phase 6: Execute in Runtime container)
-        def execute_code_func(code: str) -> str:
-            """Execute code and return result (Phase 6: Runtime container execution)"""
-            try:
-                # Execute code in Runtime container
-                success, stdout, stderr = runtime_executor.execute_code(
-                    code=code,
-                    task_id=task_id,
-                    timeout=300
-                )
-                
-                result_str = f"Success: {success}\n"
-                if stdout:
-                    result_str += f"Output:\n{stdout}\n"
-                if stderr:
-                    result_str += f"Error:\n{stderr}\n"
-                
-                log_callback("executor", f"Code execution result:\n{result_str}")
-                return result_str
-                
-            except Exception as e:
-                error_msg = f"Error executing code in runtime container: {str(e)}"
-                log_callback("executor", error_msg)
-                return f"Error: {error_msg}"
-        
-        # Set model provider
-        model_provider = ModelProvider.OPENAI if task.model_provider == "openai" else ModelProvider.ANTHROPIC
-        
-        # Phase 1: Classify task type if not already set
-        task_type = task.task_type
-        if not task_type:
-            try:
-                logger.info("Task type not set, classifying task...")
-                task_type = classify_task_type(
-                    task_name=task.name,
-                    task_description=task.description,
-                    model_provider=model_provider,
-                    model_name=task.model_name
-                )
-                # Update task in database
-                task.task_type = task_type
-                db.commit()
-                logger.success(f"Task classified as type: {task_type}")
-            except Exception as e:
-                logger.error(f"Error classifying task type: {e}", exc_info=True)
-                task_type = "code_generation"  # Default fallback
-        
-        # Create agent workflow using router (Phase 2)
-        logger.info("Creating agent workflow using router")
-        # Phase 0: If no requirements summary, use task description only
-        if requirements_summary:
-            task_description_with_requirements = task.description + "\n\nRequirements:\n" + requirements_summary
-        else:
-            task_description_with_requirements = task.description
-        
-        workflow, initial_state = route_task(
-            task_type=task_type or "code_generation",
-            model_provider=model_provider,
-            model_name=task.model_name,
-            task_id=task_id,
-            task_name=task.name,
-            task_description=task_description_with_requirements,
-            runtime_output_path=runtime_output_path,
-            execute_code_func=execute_code_func,
-            log_callback=log_callback,
-            session_id=task.session_id
-        )
-        
-        logger.info("Workflow created, starting execution")
-        log_callback("system", f"Starting task execution: {task.name}")
-        
-        # Get Langfuse callback handler (for LangGraph execution)
-        langfuse_handler = get_langfuse_handler(
-            task_id=task_id,
-            session_id=task.session_id,
-            trace_name="LangGraph Task"
-        )
-
-        try:
-            logger.info("Invoking workflow")
-            # Pass callback to LangGraph invoke
-            config = {}
-            if langfuse_handler:
-                callback_manager = CallbackManager([langfuse_handler])
-                config["callbacks"] = callback_manager
-                config["metadata"] = {"trace_name": "LangGraph Task"}
-                config["run_name"] = "LangGraph Task"
-            
-            result = workflow.invoke(initial_state, config=config if config else None)
-            logger.success("Workflow execution completed successfully")
-            log_callback("system", "Task execution completed successfully")
-            
-            # Phase 6: Check artifacts (automatically shared via volume mount)
-            # Volume mount automatically mounts /workspace/outputs/{task_id} in Runtime container
-            # to ./backend/data/artifacts/{task_id} on host side
-            logger.info("Checking for artifacts...")
-            
-            # Wait a bit before checking artifacts (wait for filesystem sync)
-            import time
-            time.sleep(1)
-            
-            # Check artifacts
-            if task_artifacts_dir.exists():
-                artifacts = list(task_artifacts_dir.iterdir())
-                if artifacts:
-                    artifact_path = str(task_artifacts_dir)
-                    task.artifact_path = artifact_path
-                    log_callback("system", f"Artifacts available at: {artifact_path}")
-                    logger.success(f"Found {len(artifacts)} artifact(s) in {artifact_path}")
-                else:
-                    logger.warning("No artifacts found in artifacts directory")
-                    # Try copying from Runtime container as a fallback
-                    logger.info("Attempting to copy artifacts from runtime container...")
-                    copy_success = runtime_executor.copy_artifacts_from_container(
-                        task_id=task_id,
-                        host_artifacts_dir=str(task_artifacts_dir)
-                    )
-                    if copy_success:
-                        artifacts = list(task_artifacts_dir.iterdir())
-                        if artifacts:
-                            artifact_path = str(task_artifacts_dir)
-                            task.artifact_path = artifact_path
-                            log_callback("system", f"Artifacts copied from runtime container to: {artifact_path}")
-            else:
-                logger.warning("Artifacts directory does not exist")
-                # Try copying from Runtime container as a fallback
-                logger.info("Attempting to copy artifacts from runtime container...")
-                copy_success = runtime_executor.copy_artifacts_from_container(
-                    task_id=task_id,
-                    host_artifacts_dir=str(task_artifacts_dir)
-                )
-                if copy_success and task_artifacts_dir.exists():
-                    artifacts = list(task_artifacts_dir.iterdir())
-                    if artifacts:
-                        artifact_path = str(task_artifacts_dir)
-                        task.artifact_path = artifact_path
-                        log_callback("system", f"Artifacts copied from runtime container to: {artifact_path}")
-            
-            # Update task to completed status
-            task.status = TaskStatus.COMPLETED.value
-            task.completed_at = datetime.utcnow()
-            db.commit()
-            
-        except Exception as e:
-            logger.error(f"Task execution failed: {e}", exc_info=True)
-            import traceback
-            error_traceback = traceback.format_exc()
-            logger.error(f"Traceback: {error_traceback}")
-            log_callback("system", f"Task execution failed: {str(e)}\n\n{error_traceback}")
-            task.status = TaskStatus.FAILED.value
-            task.error_message = f"{str(e)}\n\n{error_traceback}"
-            task.completed_at = datetime.utcnow()
-            db.commit()
-            logger.error(f"Task {task_id} marked as failed")
-            
-    except Exception as e:
-        logger.error(f"Error in background task execution: {e}", exc_info=True)
-        import traceback
-        error_traceback = traceback.format_exc()
-        logger.error(f"Traceback: {error_traceback}")
-        db.rollback()
-        # Update task to failed status
-        try:
-            task = db.query(Task).filter(Task.id == task_id).first()
-            if task:
-                task.status = TaskStatus.FAILED.value
-                task.error_message = f"{str(e)}\n\n{error_traceback}"
-                task.completed_at = datetime.utcnow()
-                db.commit()
-                logger.error(f"Task {task_id} marked as failed in exception handler")
-        except Exception as inner_e:
-            logger.error(f"Failed to update task status: {inner_e}")
-    finally:
-        logger.info(f"Background task execution finished for task: {task_id}")
-        db.close()
 
 
 @app.post("/api/tasks/{task_id}/execute")
@@ -948,8 +451,9 @@ async def execute_task(
     task.started_at = datetime.utcnow()
     db.commit()
     
-    # Execute task in background
-    asyncio.create_task(run_task_background(task_id))
+    # Execute task in background using thread pool executor
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, run_task_background, task_id, get_db)
     
     return {
         "message": "Task execution started.",
@@ -989,8 +493,9 @@ async def test_execute_task(
     
     logger.info(f"Test execution task created: {task_id} ({request.name})")
     
-    # Execute task in background
-    asyncio.create_task(run_task_background(task_id))
+    # Execute task in background using thread pool executor
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, run_task_background, task_id, get_db)
     
     return TaskResponse(
         id=task.id,
