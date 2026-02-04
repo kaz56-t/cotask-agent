@@ -39,6 +39,7 @@ from langchain_core.callbacks import CallbackManager
 from agents import create_workflow
 from executor import RuntimeExecutor
 from langfuse_config import get_langfuse_handler
+from complexity_analyzer import classify_task_type
 
 app = FastAPI(title="CoTask Agent API", version="0.1.0")
 
@@ -127,6 +128,7 @@ class TaskResponse(BaseModel):
     error_message: Optional[str]
     artifact_path: Optional[str]
     session_id: Optional[str]
+    task_type: Optional[str] = None  # Task type: code_generation, web_search, text_generation, scraping, rag, simple_text
 
     class Config:
         from_attributes = True
@@ -370,7 +372,7 @@ async def create_task(
     db.commit()
     db.refresh(session)
     
-    # Create task
+    # Create task (task_type will be set during execution)
     task = Task(
         id=task_id,
         name=task_data.name,
@@ -378,7 +380,8 @@ async def create_task(
         model_provider=task_data.model_provider,
         model_name=task_data.model_name,
         status=TaskStatus.PENDING.value,
-        session_id=session_id
+        session_id=session_id,
+        task_type=None  # Will be classified during task execution
     )
     db.add(task)
     db.commit()
@@ -462,7 +465,8 @@ async def create_task(
         completed_at=task.completed_at.isoformat() if task.completed_at else None,
         error_message=task.error_message,
         artifact_path=task.artifact_path,
-        session_id=task.session_id
+        session_id=task.session_id,
+        task_type=task.task_type
     )
 
 
@@ -501,7 +505,8 @@ async def get_tasks(
                 completed_at=task.completed_at.isoformat() if task.completed_at else None,
                 error_message=task.error_message,
                 artifact_path=task.artifact_path,
-                session_id=task.session_id
+                session_id=task.session_id,
+                task_type=task.task_type
             )
             for task in tasks
         ],
@@ -532,7 +537,8 @@ async def get_task(
         completed_at=task.completed_at.isoformat() if task.completed_at else None,
         error_message=task.error_message,
         artifact_path=task.artifact_path,
-        session_id=task.session_id
+        session_id=task.session_id,
+        task_type=task.task_type
     )
 
 
@@ -750,6 +756,25 @@ async def run_task_background(task_id: str):
         # Set model provider
         model_provider = ModelProvider.OPENAI if task.model_provider == "openai" else ModelProvider.ANTHROPIC
         
+        # Phase 1: Classify task type if not already set
+        task_type = task.task_type
+        if not task_type:
+            try:
+                logger.info("Task type not set, classifying task...")
+                task_type = classify_task_type(
+                    task_name=task.name,
+                    task_description=task.description,
+                    model_provider=model_provider,
+                    model_name=task.model_name
+                )
+                # Update task in database
+                task.task_type = task_type
+                db.commit()
+                logger.success(f"Task classified as type: {task_type}")
+            except Exception as e:
+                logger.error(f"Error classifying task type: {e}", exc_info=True)
+                task_type = "code_generation"  # Default fallback
+        
         # Create agent workflow
         logger.info("Creating agent workflow")
         # Phase 0: If no requirements summary, use task description only
@@ -767,7 +792,8 @@ async def run_task_background(task_id: str):
             runtime_output_path=runtime_output_path,
             execute_code_func=execute_code_func,
             log_callback=log_callback,
-            session_id=task.session_id
+            session_id=task.session_id,
+            task_type=task_type
         )
         
         logger.info("Workflow created, starting execution")
@@ -945,6 +971,7 @@ async def test_execute_task(
     task_id = str(uuid.uuid4())
     
     # Create task without session_id (test execution mode)
+    # task_type will be classified during task execution
     task = Task(
         id=task_id,
         name=request.name,
@@ -952,7 +979,8 @@ async def test_execute_task(
         model_provider=request.model_provider,
         model_name=request.model_name,
         status=TaskStatus.RUNNING.value,  # Start immediately
-        session_id=None  # No chat session for test execution
+        session_id=None,  # No chat session for test execution
+        task_type=None  # Will be classified during task execution
     )
     db.add(task)
     task.started_at = datetime.utcnow()
@@ -977,7 +1005,8 @@ async def test_execute_task(
         completed_at=task.completed_at.isoformat() if task.completed_at else None,
         error_message=task.error_message,
         artifact_path=task.artifact_path,
-        session_id=task.session_id
+        session_id=task.session_id,
+        task_type=task.task_type
     )
 
 

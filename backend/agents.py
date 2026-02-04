@@ -21,6 +21,7 @@ class AgentState(TypedDict):
     current_agent: str
     iteration_count: int
     max_iterations: int
+    task_type: Optional[str]  # Task type: code_generation, web_search, text_generation, scraping, rag, simple_text
 
 
 def check_api_connection(model_provider: ModelProvider, model_name: str) -> bool:
@@ -289,11 +290,14 @@ def create_workflow(
     runtime_output_path: str,
     execute_code_func,
     log_callback,
-    session_id: Optional[str] = None
+    session_id: Optional[str] = None,
+    task_type: Optional[str] = None
 ):
     """Create LangGraph workflow for task processing."""
     logger.info(f"Creating workflow for task: {task_id} ({task_name})")
     logger.info(f"Model: {model_provider.value}/{model_name}")
+    if task_type:
+        logger.info(f"Task type: {task_type}")
     
     # Get Langfuse callback handler
     langfuse_handler = get_langfuse_handler(
@@ -360,7 +364,8 @@ def create_workflow(
         "runtime_output_path": runtime_output_path,
         "current_agent": "architect",
         "iteration_count": 0,
-        "max_iterations": 2
+        "max_iterations": 2,
+        "task_type": task_type or "code_generation"  # Default to code_generation if not specified
     }
     
     logger.info("Workflow creation completed")

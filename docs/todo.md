@@ -40,11 +40,11 @@
 
 ### Phase 1: タスク分類機能の実装
 
-- [ ] `complexity_analyzer.py`を拡張し、タスクタイプ判定機能を追加
-  - タスクタイプ: `code_generation`, `web_search`, `text_generation`, `scraping`, `rag`, `simple_text`
-  - LLMベースの分類（既存のcomplexity分析と統合）
-- [ ] `AgentState`に`task_type`フィールドを追加
-- [ ] タスク分類結果をDBに保存（`Task.task_type`カラム追加）
+- [x] `complexity_analyzer.py`を拡張し、タスクタイプ判定機能を追加 ✅
+  - タスクタイプ: `code_generation`, `web_search`, `text_generation`, `scraping`, `rag`, `simple_text` ✅
+  - LLMベースの分類（既存のcomplexity分析と統合） ✅
+- [x] `AgentState`に`task_type`フィールドを追加 ✅
+- [x] タスク分類結果をDBに保存（`Task.task_type`カラム追加） ✅
 
 ### Phase 2: 専用Agentの実装
 

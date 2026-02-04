@@ -16,6 +16,7 @@ class AgentState(TypedDict):
     current_agent: str
     iteration_count: int
     max_iterations: int
+    task_type: str  # Task type: code_generation, web_search, text_generation, scraping, rag, simple_text
 
 
 def create_sample_workflow():
