@@ -57,6 +57,7 @@ class Task(Base):
     completed_at = Column(DateTime, nullable=True)
     error_message = Column(Text, nullable=True)
     artifact_path = Column(String, nullable=True)
+    task_type = Column(String, nullable=True)  # Task type: code_generation, web_search, text_generation, scraping, rag, simple_text
     
     # Link task and chat session one-to-one
     session_id = Column(String, ForeignKey("chat_sessions.id"), nullable=True, unique=True)
