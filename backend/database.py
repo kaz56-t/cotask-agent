@@ -58,7 +58,9 @@ class Task(Base):
     error_message = Column(Text, nullable=True)
     artifact_path = Column(String, nullable=True)
     task_type = Column(String, nullable=True)  # Task type: code_generation, web_search, text_generation, scraping, rag, simple_text
-    
+    complexity = Column(String, nullable=True)  # Task complexity: simple, medium, complex
+    estimated_iterations = Column(Integer, nullable=True)  # Estimated number of iterations needed
+
     # Link task and chat session one-to-one
     session_id = Column(String, ForeignKey("chat_sessions.id"), nullable=True, unique=True)
     session = relationship("ChatSession", back_populates="task", uselist=False)

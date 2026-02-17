@@ -7,7 +7,7 @@ from database import Task, TaskStatus, ModelProvider, TaskLog, ChatMessage
 from agent.router import route_task
 from executor import RuntimeExecutor
 from langfuse_config import get_langfuse_handler
-from complexity_analyzer import classify_task_type
+from complexity_analyzer import classify_task_type, analyze_task_complexity
 from loguru import logger
 import time
 
@@ -119,6 +119,33 @@ def run_task_background(task_id: str, get_db):
             except Exception as e:
                 logger.error(f"Error classifying task type: {e}", exc_info=True)
                 task_type = "code_generation"  # Default fallback
+
+        # Phase 4: Analyze task complexity if not already set
+        complexity = task.complexity
+        estimated_iterations = task.estimated_iterations
+        if not complexity or not estimated_iterations:
+            try:
+                logger.info("Analyzing task complexity...")
+                analysis = analyze_task_complexity(
+                    task_name=task.name,
+                    task_description=task.description,
+                    model_provider=model_provider,
+                    model_name=task.model_name
+                )
+                # Update task in database
+                task.complexity = analysis["complexity"]
+                task.estimated_iterations = analysis["estimated_iterations"]
+                db.commit()
+                logger.success(f"Task complexity analyzed: {analysis['complexity']} (iterations: {analysis['estimated_iterations']})")
+                logger.info(f"Reasoning: {analysis['reasoning']}")
+
+                # Update local variables
+                complexity = task.complexity
+                estimated_iterations = task.estimated_iterations
+            except Exception as e:
+                logger.error(f"Error analyzing task complexity: {e}", exc_info=True)
+                complexity = "medium"  # Default fallback
+                estimated_iterations = 2
         
         # Create agent workflow using router (Phase 2)
         logger.info("Creating agent workflow using router")
@@ -130,6 +157,8 @@ def run_task_background(task_id: str, get_db):
         
         workflow, initial_state = route_task(
             task_type=task_type or "code_generation",
+            complexity=complexity,
+            estimated_iterations=estimated_iterations or 2,
             model_provider=model_provider,
             model_name=task.model_name,
             task_id=task_id,

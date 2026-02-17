@@ -56,6 +56,8 @@ class TaskResponse(BaseModel):
     artifact_path: Optional[str]
     session_id: Optional[str]
     task_type: Optional[str] = None  # Task type: code_generation, web_search, text_generation, scraping, rag, simple_text
+    complexity: Optional[str] = None  # Task complexity: simple, medium, complex
+    estimated_iterations: Optional[int] = None  # Estimated number of iterations needed
 
     class Config:
         from_attributes = True

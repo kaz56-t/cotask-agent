@@ -190,11 +190,13 @@ def create_code_workflow(
     execute_code_func,
     log_callback,
     session_id: Optional[str] = None,
-    task_type: Optional[str] = None
+    task_type: Optional[str] = None,
+    estimated_iterations: int = 2
 ):
     """Create LangGraph workflow for code generation tasks (Architect+Executor)."""
     logger.info(f"Creating CodeAgent workflow for task: {task_id} ({task_name})")
     logger.info(f"Model: {model_provider.value}/{model_name}")
+    logger.info(f"Estimated iterations: {estimated_iterations}")
     if task_type:
         logger.info(f"Task type: {task_type}")
     
@@ -251,11 +253,15 @@ def create_code_workflow(
     
     app = workflow.compile(**compile_kwargs)
     logger.success("Workflow graph compiled successfully")
-    
-    # Initial state - reduce max_iterations to 3 (speed priority)
+
+    # Initial state - use estimated_iterations (dynamically set based on complexity)
+    # Ensure max_iterations is at least 2 for complex tasks
+    max_iterations = max(2, estimated_iterations)
+    logger.info(f"Setting max_iterations to {max_iterations}")
+
     initial_state = {
         "messages": [
-            HumanMessage(content=f"Task: {task_name}\n\nDescription: {task_description}\n\nComplete this task quickly. Save outputs to {runtime_output_path}/")
+            HumanMessage(content=f"Task: {task_name}\n\nDescription: {task_description}\n\nComplete this task efficiently. Save outputs to {runtime_output_path}/")
         ],
         "task_id": task_id,
         "task_name": task_name,
@@ -263,9 +269,9 @@ def create_code_workflow(
         "runtime_output_path": runtime_output_path,
         "current_agent": "architect",
         "iteration_count": 0,
-        "max_iterations": 2,
+        "max_iterations": max_iterations,
         "task_type": task_type or "code_generation"  # Default to code_generation if not specified
     }
-    
+
     logger.info("CodeAgent workflow creation completed")
     return app, initial_state
